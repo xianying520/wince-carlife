@@ -84,6 +84,10 @@ jobs:
       # 用 Baidu 官方仓库里的 .proto 文件核对我们的编码，
       # 以及核对消息 ID / 包头长度。之前所有验证都是"代码是否符合我的理解"，
       # 这一步是拿权威规格来核对代码。
+      - name: 源码静态自查（函数声明顺序等）
+        run: |
+          python3 scripts/check_order.py
+
       - name: 核对协议编码与官方规格
         run: |
           python3 scripts/check_proto.py
