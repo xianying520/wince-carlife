@@ -213,6 +213,29 @@ def main():
         return 1
     print("  ✅ 主机编译通过（说明协议代码没有平台耦合）")
 
+    # 先跑逐步诊断：把 cl_connect 的每一步摊开，失败时能直接看出卡在哪
+    r = subprocess.run(
+        ["gcc", "-O1", "-Wall", "-DCL_HOST_TEST", "-Isrc", "-Ihost",
+         "-o", "/tmp/cl_diag", "host/diag_connect.c"],
+        capture_output=True, text=True)
+    if r.returncode != 0:
+        print("  ⚠ 诊断程序编译失败：", r.stderr[:400])
+    else:
+        # 诊断要连一个真实在听的端口，所以先临时起一个
+        _probe = socket.socket()
+        _probe.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        try:
+            _probe.bind((HOST, PORT_CMD))
+            _probe.listen(1)
+            d = subprocess.run(["/tmp/cl_diag"], capture_output=True, text=True, timeout=30)
+            print(d.stdout, end="")
+            if d.stderr.strip():
+                print(d.stderr, end="")
+        except OSError as e:
+            print(f"  ⚠ 诊断用临时端口起不来: {e}")
+        finally:
+            _probe.close()
+
     print("\n══ 启动假手机并跑真实协议代码 ══")
     ready = [threading.Event() for _ in range(3)]
     ts = [threading.Thread(target=with_report, args=(port, fn, e), daemon=True)
