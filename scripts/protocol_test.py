@@ -90,6 +90,8 @@ def cmd_server(ready):
     conn_t = None      # 已监听 ≠ 函数返回。accept() 会一直阻塞，
     ready.set()                       # 等 fn 返回才标记的话状态表永远是空的。
     conn, addr = srv.accept()
+    print(f"    [假手机] 7240(CMD) 有人连上了: {addr}")
+
     print(f"    [假手机] 有人连上了: {addr}")
     conn.settimeout(8)
 
@@ -150,6 +152,8 @@ def video_server(ready):  # noqa: D401
     print("    [假手机] 8240 已在监听")      # 已监听 ≠ 函数返回。accept() 会一直阻塞，
     ready.set()                       # 等 fn 返回才标记的话状态表永远是空的。
     conn, addr = srv.accept()
+    print(f"    [假手机] 8240(VIDEO) 有人连上了: {addr}")
+
     print(f"    [假手机] 有人连上了: {addr}")
     jpg = open(TEST_JPEG_PATH, "rb").read()
     # 视频通道用 12 字节包头：size(BE32) timestamp(BE32) msgID(BE32)
@@ -169,6 +173,8 @@ def touch_server(ready):
     print("    [假手机] 9340 已在监听")      # 已监听 ≠ 函数返回。accept() 会一直阻塞，
     ready.set()                       # 等 fn 返回才标记的话状态表永远是空的。
     conn, addr = srv.accept()
+    print(f"    [假手机] 9340(TOUCH) 有人连上了: {addr}")
+
     print(f"    [假手机] 有人连上了: {addr}")
     conn.settimeout(8)
 
