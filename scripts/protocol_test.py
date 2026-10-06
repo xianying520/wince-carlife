@@ -71,8 +71,6 @@ def with_report(port, fn, ready):
     之前这里异常会被静默吞掉，导致"连不上"看不出是谁的问题。"""
     try:
         fn(ready)
-        with lock:
-            srv_state.setdefault(port, "ok")
     except Exception as e:                      # noqa: BLE001
         with lock:
             srv_state[port] = f"{type(e).__name__}: {e}"
@@ -85,7 +83,9 @@ def cmd_server(ready):
     srv.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
     srv.bind((HOST, PORT_CMD))
     srv.listen(1)
-    ready.set()
+    with lock:
+        srv_state[PORT_CMD] = "ok"      # 已监听 ≠ 函数返回。accept() 会一直阻塞，
+    ready.set()                       # 等 fn 返回才标记的话状态表永远是空的。
     conn, _ = srv.accept()
     conn.settimeout(8)
 
@@ -141,7 +141,9 @@ def video_server(ready):
     srv.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
     srv.bind((HOST, PORT_VIDEO))
     srv.listen(1)
-    ready.set()
+    with lock:
+        srv_state[PORT_VIDEO] = "ok"      # 已监听 ≠ 函数返回。accept() 会一直阻塞，
+    ready.set()                       # 等 fn 返回才标记的话状态表永远是空的。
     conn, _ = srv.accept()
     jpg = open(TEST_JPEG_PATH, "rb").read()
     # 视频通道用 12 字节包头：size(BE32) timestamp(BE32) msgID(BE32)
@@ -156,7 +158,9 @@ def touch_server(ready):
     srv.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
     srv.bind((HOST, PORT_TOUCH))
     srv.listen(1)
-    ready.set()
+    with lock:
+        srv_state[PORT_TOUCH] = "ok"      # 已监听 ≠ 函数返回。accept() 会一直阻塞，
+    ready.set()                       # 等 fn 返回才标记的话状态表永远是空的。
     conn, _ = srv.accept()
     conn.settimeout(8)
 
@@ -219,20 +223,14 @@ def main():
     for e in ready:
         e.wait(5)
 
-    # 预检：Python 自己先连一遍每个端口，确认监听确实起来了。
-    # 这样"连不上"就能立刻分清是假手机没起来，还是被测程序的问题。
-    print("  假手机监听状态预检：")
+    # 只报告监听状态，【不自己连一次】—— 自己连会消耗掉一次 accept，
+    # 之后真正的被测程序就会读到那条错误的连接。
+    print("  假手机监听状态：")
     pre_ok = True
     for port in (PORT_CMD, PORT_VIDEO, PORT_TOUCH):
         st = srv_state.get(port, "（线程未就绪）")
         if st == "ok":
-            try:
-                c = socket.create_connection((HOST, port), timeout=2)
-                c.close()
-                print(f"    ✅ {port} 可连接")
-            except Exception as e:              # noqa: BLE001
-                print(f"    ❌ {port} 监听中但连不上: {e}")
-                pre_ok = False
+            print(f"    ✅ {port} 已监听")
         else:
             print(f"    ❌ {port} 没起来: {st}")
             pre_ok = False
@@ -240,7 +238,6 @@ def main():
         print("\n⚠ 假手机自身有问题，下面的结果不可信。线程异常：")
         for e in thread_err:
             print("   -", e)
-        # 预检会消耗掉 cmd 的一次 accept，所以直接判定失败，避免误导
         return 1
 
     proc = subprocess.run(["/tmp/cl_host_test"], capture_output=True, text=True, timeout=40)
