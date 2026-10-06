@@ -64,13 +64,23 @@ static DWORD     g_tid;
 #endif
 static int       g_own_device;        /* 设备是不是本模块打开的（决定要不要关） */
 
-/* 关设备：主机测试下没有设备可关，包一层以免引用到 WinCE 的符号。 */
+/* 关设备：主机测试下没有设备可关，包一层以免引用到 WinCE 的符号。
+ * （原本写成宏，结果后来一次全局替换把宏体里那行也一并换掉了，
+ *   宏于是变成自己调自己，链接时报 undefined reference。
+ *   改成普通函数就不会被这种替换误伤。） */
 #ifdef ADBP_HOST_TEST
-#define ADBP_CLOSE_DEVICE()   do { g_own_device = 0; } while (0)
+static void adbp_close_device(void)
+{
+    g_own_device = 0;
+}
 #else
-#define ADBP_CLOSE_DEVICE()   do {                                     \
-        ADBP_CLOSE_DEVICE();      \
-    } while (0)
+static void adbp_close_device(void)
+{
+    if (g_own_device) {
+        adbio_ce_close();
+        g_own_device = 0;
+    }
+}
 #endif
 static volatile int g_stop;
 static volatile int g_running;
@@ -378,7 +388,7 @@ int adbp_start_with_io(ADB_IO io, const char * const *services, int n_services,
                              "ADB 认证失败（错误 %d）", r);
                 reason[reason_cap - 1] = 0;
             }
-            ADBP_CLOSE_DEVICE();
+            adbp_close_device();
             return -4;
         }
     }
@@ -451,7 +461,7 @@ fail:
         }
         g_svc[i].used = 0;
     }
-    ADBP_CLOSE_DEVICE();
+    adbp_close_device();
     g_nsvc = 0;
     return -5;
 }
@@ -498,7 +508,7 @@ void adbp_stop(void)
         }
         g_svc[i].used = 0;
     }
-    ADBP_CLOSE_DEVICE();
+    adbp_close_device();
     g_nsvc = 0;
     g_running = 0;
 }
