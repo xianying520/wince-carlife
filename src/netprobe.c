@@ -18,6 +18,7 @@
 #include <windows.h>
 #include <string.h>
 #include "carlife.h"
+#include "uicommon.h"
 
 #define REPORT_CAP 8192
 #define MAX_IP     8
@@ -25,6 +26,8 @@
 static WCHAR g_report[REPORT_CAP];
 static int   g_len = 0;
 static HWND  g_hwnd = 0;
+static int   g_first = 0;   /* 当前页从第几行开始 */
+static int   g_total = 0;
 
 /* ── 追加一行到报告缓冲 ── */
 static void app(const WCHAR *s)
@@ -257,14 +260,27 @@ static LRESULT CALLBACK WndProc(HWND h, UINT m, WPARAM w, LPARAM l)
         GetClientRect(h, &rc);
         SetBkMode(dc, TRANSPARENT);
         SetTextColor(dc, RGB(0, 0, 0));
-        DrawTextW(dc, g_report, -1, &rc, DT_LEFT | DT_TOP | DT_WORDBREAK);
+        /* 只画当前页 —— 车机没有滚动条，靠点屏幕翻页 */
+        DrawTextW(dc, uic_line_n(g_report, g_first), -1, &rc,
+                  DT_LEFT | DT_TOP | DT_WORDBREAK);
         EndPaint(h, &ps);
         return 0;
     }
     case WM_LBUTTONDOWN:
-    case WM_KEYDOWN:
-        DestroyWindow(h);
+    case WM_KEYDOWN: {
+        HDC dc = GetDC(h);
+        RECT rc;
+        int per;
+        GetClientRect(h, &rc);
+        per = uic_lines_per_page(dc, rc.bottom);
+        ReleaseDC(h, dc);
+        g_first += per;
+        if (g_first >= g_total)
+            DestroyWindow(h);          /* 看到底了再点才退出 */
+        else
+            InvalidateRect(h, 0, TRUE);
         return 0;
+    }
     case WM_DESTROY:
         PostQuitMessage(0);
         return 0;
@@ -298,6 +314,8 @@ int WINAPI WinMain(HINSTANCE hi, HINSTANCE hp, LPWSTR cmd, int show)
     UpdateWindow(g_hwnd);
 
     do_probe();                        /* 窗口已显示，探测期间可看到空窗 */
+    g_total = uic_count_lines(g_report);
+    uic_dump_file(L"netprobe-result.txt", g_report);   /* 结果写文件，便于拷出来发给开发方 */
     InvalidateRect(g_hwnd, 0, TRUE);   /* 结果画上去 */
 
     while (GetMessageW(&msg, 0, 0, 0)) {
