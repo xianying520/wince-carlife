@@ -143,6 +143,19 @@ int main(int argc, char **argv)
     }
 
     {
+        const char *pk = adbp_phone_packages();
+        int plen = pk ? (int)strlen(pk) : -1;
+        printf("PHONE_PKGS_LEN=%d\n", plen);
+        if (pk && plen > 0) {
+            char head[121];
+            int n = plen > 120 ? 120 : plen;
+            memcpy(head, pk, (size_t)n);
+            head[n] = 0;
+            printf("PHONE_PKGS_HEAD=%.120s\n", head);
+        }
+    }
+
+    {
         unsigned long tx = 0, rx = 0;
         adbp_stats(&tx, &rx);
         printf("STATS_TX=%lu\n", tx);

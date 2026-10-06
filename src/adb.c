@@ -191,15 +191,19 @@ static int handle_msg(ADB *a, unsigned int cmd, unsigned int a0,
         ADB_CHAN *c = chan_by_local(a, a1);
         if (c)
             chan_append(c, data, len);
-        /* 收到就必须回 OKAY，否则对端不会再发 —— ADB 是严格应答式的 */
-        send_msg(a, ADB_OKAY, c ? c->remote_id : a0, a1, 0, 0);
+        /* 收到就必须回 OKAY，否则对端不会再发 —— ADB 是严格应答式的。
+         * ⚠ 应答里的 arg0 直接用收到的 a0，不要用 c->remote_id：
+         *   在 OPEN 刚发出、OKAY 还没回来的那段时间里 remote_id 还没有值，
+         *   用它会把对端自己的通道号填错（-1）。a0 就是对端的通道号，
+         *   任何时候填它都对。 */
+        send_msg(a, ADB_OKAY, a0, a1, 0, 0);
         return 0;
     }
     case ADB_CLSE: {
         ADB_CHAN *c = chan_by_local(a, a1);
         if (c)
             c->closed = 1;
-        send_msg(a, ADB_CLSE, c ? c->remote_id : a0, a1, 0, 0);
+        send_msg(a, ADB_CLSE, a0, a1, 0, 0);
         return 0;
     }
     case ADB_OKAY:
@@ -335,6 +339,24 @@ int adb_open(ADB *a, const char *service)
 
     local_id = (int)a->next_id++;
 
+    /* ⚠ 先占住通道，再发 OPEN。
+     *   手机端服务起来很快，OKAY 和数据常常前后脚到 —— 如果等收到 OKAY
+     *   才把通道标记成"已使用"，这中间到达的数据会被 chan_by_local 当成
+     *   未知通道【直接丢掉】，而 OKAY 又照常回给对端，对端完全察觉不到。
+     *   结果就是"转发明明是通的，数据却少了/命令没输出"，极难查。
+     *   这个坑是主机端到端测试跑出来的（假手机把包名清单紧跟在 OKAY 后面发）。 */
+    {
+        ADB_CHAN *c0 = &a->ch[idx];
+        int sl = (int)strlen(service);
+        memset(c0, 0, sizeof(*c0));
+        c0->used = 1;
+        c0->local_id = local_id;
+        c0->remote_id = -1;            /* 还没有，收到 OKAY 再补 */
+        if (sl > 63) sl = 63;
+        memcpy(c0->service, service, (size_t)sl);
+        c0->service[sl] = 0;
+    }
+
     {
         char svc[64];
         int sl = (int)strlen(service);
@@ -343,8 +365,10 @@ int adb_open(ADB *a, const char *service)
         svc[sl] = 0;
         /* OPEN 的服务名按惯例带结尾 0 */
         if (send_msg(a, ADB_OPEN, (unsigned int)local_id, 0,
-                     (const unsigned char *)svc, sl + 1) < 0)
+                     (const unsigned char *)svc, sl + 1) < 0) {
+            memset(&a->ch[idx], 0, sizeof(a->ch[idx]));
             return -1;
+        }
     }
 
     for (;;) {
@@ -352,22 +376,15 @@ int adb_open(ADB *a, const char *service)
         if (r <= 0) return r == -2 ? -2 : -1;
 
         if (cmd == ADB_OKAY && a1 == (unsigned int)local_id) {
-            ADB_CHAN *c = &a->ch[idx];
-            memset(c, 0, sizeof(*c));
-            c->used = 1;
-            c->remote_id = (int)a0;
-            c->rx = 0; c->rx_cap = 0; c->rx_len = 0; c->rx_head = 0;
-            c->closed = 0;
-            {
-                int sl = (int)strlen(service);
-                if (sl > 63) sl = 63;
-                memcpy(c->service, service, (size_t)sl);
-                c->service[sl] = 0;
-            }
+            /* 通道在发 OPEN 时就占好了，这里只补上对端的通道号 ——
+             * 期间可能已经有数据存进 c->rx 了，绝不能 memset 清掉。 */
+            a->ch[idx].remote_id = (int)a0;
             return local_id;
         }
-        if (cmd == ADB_CLSE && a1 == (unsigned int)local_id)
+        if (cmd == ADB_CLSE && a1 == (unsigned int)local_id) {
+            memset(&a->ch[idx], 0, sizeof(a->ch[idx]));   /* 被拒：把占位还回去 */
             return -3;                          /* 手机拒绝了这条转发 */
+        }
         if (cmd == ADB_WRTE || cmd == ADB_CLSE || cmd == ADB_OKAY) {
             if (handle_msg(a, cmd, a0, a1, buf, len) < 0)
                 return -1;
@@ -567,7 +584,7 @@ int adb_close_chan(ADB *a, int chan)
     if (!c->used)
         return 0;
 
-    if (!c->closed)
+    if (!c->closed && c->remote_id >= 0)
         send_msg(a, ADB_CLSE, (unsigned int)chan,
                  (unsigned int)c->remote_id, 0, 0);
 
