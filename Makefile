@@ -11,10 +11,14 @@ BUILD  := build
 CFLAGS  := -Os -Wall -DUNICODE -D_UNICODE -Isrc
 
 # PE 子系统必须是 9(WINDOWS_CE_GUI)，否则车机不认。
-# ⚠ 实测教训：CeGCC(ENLYZE 9.3.0) 不认桌面 MinGW 的 -mwindows
-#   （报 "unrecognized command line option"）。
-# CI 会先探测出可用组合，再通过 make LDFLAGS=... 覆盖这里。
-LDFLAGS ?= -Wl,--subsystem,windowsce -s
+#
+# ⚠ 实测教训（两轮 CI 换来的，别再走回头路）：
+#   · -mwindows              → CeGCC 不认："unrecognized command line option"
+#   · -Wl,--subsystem,windowsce → ld 不认："invalid subsystem type windowsce"
+#   · 不加任何旗标            → ✅ 链接成功（CeGCC 的 arm-mingw32ce 目标
+#                              本来就默认产出 WinCE 程序，不需要额外旗标）
+# CI 仍会先探测一次再覆盖这里，以防工具链换版本后行为改变。
+LDFLAGS ?= -s
 
 # 导入库名同样可能因工具链而异，CI 探测后覆盖。
 # 注意 NETLIB 必须是 WinCE 的 ws2（对应 ws2.dll），
