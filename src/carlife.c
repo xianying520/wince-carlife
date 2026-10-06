@@ -364,26 +364,40 @@ int cl_resend_version(SOCKET s)
 }
 
 /* CarlifeTouchAction{action=1, x=2, y=3} —— 全是 int32 */
-int cl_send_touch_action(SOCKET s, int action, int x, int y, int hdr_len)
+int cl_send_touch_action(SOCKET s, int action, int x, int y, int mode)
 {
     unsigned char body[32];
     int n = 0;
+    unsigned long id;
 
-    n += pb_int32(body + n, 1, action);
-    n += pb_int32(body + n, 2, x);
-    n += pb_int32(body + n, 3, y);
+    if (mode == 1) {
+        /* 写法 B：通用消息 + CarlifeTouchAction{action=1, x=2, y=3} */
+        n += pb_int32(body + n, 1, action);
+        n += pb_int32(body + n, 2, x);
+        n += pb_int32(body + n, 3, y);
+        return send_packet(s, CL_MSG_TOUCH_ACTION, body, n, CL_HDR_CMD);
+    }
 
-    return send_packet(s, CL_MSG_TOUCH_ACTION, body, n, hdr_len);
+    /* 写法 A：专用消息 + CarlifeTouchSinglePoint{x=1, y=2}
+     * 参考实现里 action 只用来选消息 ID，载荷里不带 action。 */
+    switch (action) {
+    case 0:  id = CL_MSG_TOUCH_ACTION_DOWN; break;
+    case 1:  id = CL_MSG_TOUCH_ACTION_UP;   break;
+    default: id = CL_MSG_TOUCH_ACTION_MOVE; break;
+    }
+    n += pb_int32(body + n, 1, x);
+    n += pb_int32(body + n, 2, y);
+    return send_packet(s, id, body, n, CL_HDR_CMD);
 }
 
-/* CarlifeCarHardKeyCode{keycode=1} */
-int cl_send_hard_key(SOCKET s, int keycode, int hdr_len)
+int cl_send_hard_key(SOCKET s, int keycode)
 {
     unsigned char body[16];
     int n = 0;
 
+    /* CarlifeCarHardKeyCode{keycode=1} */
     n += pb_int32(body + n, 1, keycode);
-    return send_packet(s, CL_MSG_TOUCH_CAR_HARD_KEY, body, n, hdr_len);
+    return send_packet(s, CL_MSG_TOUCH_CAR_HARD_KEY, body, n, CL_HDR_CMD);
 }
 
 /* 生成候选手机地址：本机同网段 .1/.129/.100 + 常见 USB 网络共享地址。

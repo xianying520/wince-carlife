@@ -26,7 +26,12 @@ static DISP     g_disp;
 static SOCKET   g_cmd = INVALID_SOCKET;
 static SOCKET   g_vid = INVALID_SOCKET;
 static SOCKET   g_touch = INVALID_SOCKET;
-static int      g_touch_hdr = CL_HDR_CMD;   /* 触摸包头长：8 或 12，未实证，先 8 */
+/* 触摸写法：0 = 专用消息 + SinglePoint（参考实现在用的）
+ *           1 = 通用消息 + TouchAction（参考实现里被注释掉的）
+ * 两套都实现是因为从参考源码分不出手机接受哪一套，现场点按钮试即可。
+ * 包头长度不再是悬念 —— 参考源码 CTRL_HEAD_LEN 8 且注释写明
+ * "ctrol channel [HU->MD]"，已实证。 */
+static int      g_touch_mode = 0;
 
 /* ── 请求的画面参数预设 ──
  * 为什么要有这个：老 ARM 上软解 JPEG 的能力大致按「每秒像素数」衡量。
@@ -111,7 +116,7 @@ static void send_touch(int action, int x, int y)
 {
     if (g_touch == INVALID_SOCKET)
         return;
-    cl_send_touch_action(g_touch, action, x, y, g_touch_hdr);
+    cl_send_touch_action(g_touch, action, x, y, g_touch_mode);
 }
 
 /* 按当前预设重新初始化视频编码器。
@@ -201,13 +206,13 @@ static LRESULT CALLBACK WndProc(HWND h, UINT m, WPARAM w, LPARAM l)
             DrawTextW(dc, g_status, -1, &bar,
                       DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS);
 
-            /* 触摸包头长度切换按钮：
-             * 触摸消息该用 8 字节还是 12 字节包头，参考源码只能推出是
-             * CTRL 通道(8)，但未在真机上实证过。做成按钮，现场可以直接试，
-             * 不用为了改一个数字重新编译一轮。 */
+            /* 触摸写法切换按钮：
+             * 参考实现里触摸有两套写法，但只能看出其中一套在被使用
+             * （另一套在示例代码里是注释状态）。从源码分不出手机接受哪套，
+             * 做成按钮现场直接试，不用重新编译。 */
             {
                 RECT tg = rc;
-                HBRUSH tb = CreateSolidBrush(g_touch_hdr == CL_HDR_CMD
+                HBRUSH tb = CreateSolidBrush(g_touch_mode == 0
                                              ? RGB(40, 90, 40) : RGB(120, 90, 20));
                 WCHAR lbl[24];
                 tg.top = rc.bottom - STATUS_H;
@@ -216,7 +221,7 @@ static LRESULT CALLBACK WndProc(HWND h, UINT m, WPARAM w, LPARAM l)
                 FillRect(dc, &tg, tb);
                 DeleteObject(tb);
                 SetTextColor(dc, RGB(255, 255, 255));
-                wsprintfW(lbl, L"触包%d", g_touch_hdr);
+                wsprintfW(lbl, L"触摸%s", g_touch_mode == 0 ? L"A" : L"B");
                 DrawTextW(dc, lbl, -1, &tg, DT_CENTER | DT_VCENTER | DT_SINGLELINE);
             }
 
@@ -277,10 +282,13 @@ static LRESULT CALLBACK WndProc(HWND h, UINT m, WPARAM w, LPARAM l)
             InvalidateRect(h, 0, FALSE);
             return 0;
         }
-        /* 触摸包头长度切换 */
+        /* 触摸写法切换 */
         if (x >= rc.right - EXIT_W - TOG_W && x < rc.right - EXIT_W
             && y >= rc.bottom - STATUS_H) {
-            g_touch_hdr = (g_touch_hdr == CL_HDR_CMD) ? CL_HDR_MEDIA : CL_HDR_CMD;
+            g_touch_mode = (g_touch_mode == 0) ? 1 : 0;
+            set_status(g_touch_mode == 0
+                       ? L"触摸写法 A：专用消息 + 单点坐标（参考实现在用）"
+                       : L"触摸写法 B：通用消息 + 动作+坐标（参考实现里注释掉的）");
             InvalidateRect(h, 0, FALSE);
             return 0;
         }

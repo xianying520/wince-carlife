@@ -166,3 +166,32 @@ int CConnectionSetupModule::connectionSetup(string mdIPAddress) {  // 无线
 |---|---|---|
 | M2 | 未知，可能要从零写 ADB host | **分两支**：<br>M2a **IP 路径**（USB 网络共享 → 只用 Winsock）← 先试这个<br>M2b ADB 路径（自己实现 ADB host）← 兜底 |
 | M3 | 自己实现协议 | **在 Apache-2.0 现成实现上移植**（54 个 .proto 已收入 `docs/carlife-proto/`） |
+
+
+---
+
+## 触摸回传：已用参考实现证实（本轮）
+
+此前触摸是最不确定的一环（只能从消息 ID 前缀推断）。查参考实现
+`CTranRecvPackageProcess.cpp` 后已确证：
+
+```cpp
+//ctrol channel [HU->MD]                                      ← 通道：控制通道
+int CTranRecvPackageProcess::sendCtrlTouchAction(S_TOUCH_ACTION* touchAction) {
+    CarlifeTouchAction action;
+    action.set_action(...); set_x(...); set_y(...);
+    setPackageHeadType(MSG_TOUCH_ACTION);
+    ...
+    writeCtrlData(sendPackage.packageHead, CTRL_HEAD_LEN);     ← 包头长度
+```
+
+**结论**：
+
+| 项目 | 值 | 依据 |
+|---|---|---|
+| 通道 | 控制通道 | 函数名前缀 `Ctrl` + 注释 `ctrol channel [HU->MD]` |
+| 包头长度 | **8 字节** | `#define CTRL_HEAD_LEN 8` |
+| 写法 A | `MSG_TOUCH_ACTION_DOWN/UP/MOVE` + `CarlifeTouchSinglePoint{x=1,y=2}` | 参考实现**正在使用** |
+| 写法 B | `MSG_TOUCH_ACTION` + `CarlifeTouchAction{action=1,x=2,y=3}` | 参考实现里**被注释掉** |
+
+**两套写法都实现，做成界面按钮现场切换** —— 因为从源码分不出手机接受哪一套。

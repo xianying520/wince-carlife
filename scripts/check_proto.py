@@ -47,8 +47,8 @@ def proto_fields(msg):
 # (C 函数名, proto 消息名)
 CHECKS = [
     ("cl_send_video_encoder_init", "CarlifeVideoEncoderInfo"),
-    ("cl_send_touch_action",       "CarlifeTouchAction"),
     ("cl_send_hard_key",           "CarlifeCarHardKeyCode"),
+    # 触摸单独核对：它有两套写法，分别对应两个不同的 proto 消息（见 ①b / ①c）
 ]
 
 src_c = rd(CARLIFE_C)
@@ -89,6 +89,43 @@ for func, msg in CHECKS:
                 if norm(a) not in n.lower() and n.lower() not in norm(a)]
         if mism:
             print(f"       ⚠ 参数名与字段名对不上，人工确认一下: {mism}")
+
+# cl_send_touch_action 有两套写法，分别对应两个不同的 proto 消息
+m = re.search(r"int\s+cl_send_touch_action\s*\([^)]*\)\s*\{(.*?)\n\}", src_c, re.S)
+if m:
+    body = m.group(1)
+    # 写法 A：只用字段 1,2（CarlifeTouchSinglePoint 是 x=1,y=2）
+    pa = proto_fields("CarlifeTouchSinglePoint")
+    wantA = [n for n, _, _ in pa]
+    segA = body[body.index("写法 A"):] if "写法 A" in body else body
+    usedA = [int(x) for x in re.findall(r"pb_int32\(\s*[^,]+,\s*(\d+)\s*,", segA)]
+    print()
+    print("══ ①b 触摸写法 A（专用消息 + 单点坐标）══")
+    oka = (usedA == wantA)
+    if not oka:
+        fails.append(f"触摸写法A 字段 {usedA} != {wantA}")
+    print(f"  {'✅' if oka else '❌'} 我们发的 {usedA}  proto 声明 {wantA}"
+          f"  ({', '.join(n for _, n, _ in pa)})")
+
+    # 写法 B：字段 1,2,3（CarlifeTouchAction）
+    pb_ = proto_fields("CarlifeTouchAction")
+    wantB = [n for n, _, _ in pb_]
+    segB = body[body.index("写法 B"):body.index("写法 A")] if "写法 A" in body else body
+    usedB = [int(x) for x in re.findall(r"pb_int32\(\s*[^,]+,\s*(\d+)\s*,", segB)]
+    print("══ ①c 触摸写法 B（通用消息 + 动作坐标）══")
+    okb = (usedB == wantB)
+    if not okb:
+        fails.append(f"触摸写法B 字段 {usedB} != {wantB}")
+    print(f"  {'✅' if okb else '❌'} 我们发的 {usedB}  proto 声明 {wantB}"
+          f"  ({', '.join(nm for _, nm, _ in pb_)})")
+
+# 触摸包头的确认依据
+m = re.search(r"send_packet\(s,\s*id,\s*body,\s*n,\s*(\w+)\)", src_c)
+if m and m.group(1) != "CL_HDR_CMD":
+    fails.append(f"触摸用的包头 {m.group(1)} 应为 CL_HDR_CMD")
+print()
+print(f"  {'✅' if m and m.group(1) == 'CL_HDR_CMD' else '❌'} "
+      f"触摸走 CTRL 通道（参考源码 CTRL_HEAD_LEN 8 + 注释 'ctrol channel [HU->MD]'）")
 
 # ── ② 核对握手那段手写字节的 tag ──
 print()

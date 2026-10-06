@@ -112,8 +112,19 @@ const WCHAR *cl_guess_codec(const unsigned char *p, int len);
  * hdr_len 传 CL_HDR_CMD(8) 或 CL_HDR_MEDIA(12)：
  * 参考实现把触摸归在 CTRL 通道（8 字节），但未实证，
  * 所以留成参数，两条都试，以手机有响应的那条为准。 */
-int cl_send_touch_action(SOCKET s, int action, int x, int y, int hdr_len);
-int cl_send_hard_key(SOCKET s, int keycode, int hdr_len);
+/* 触摸回传：action 0=按下 1=抬起 2=移动。
+ *
+ * mode 决定用哪一套写法 —— 参考实现里两套都存在，但只有一套在用：
+ *   mode 0：专用消息 TOUCH_ACTION_DOWN/UP/MOVE + CarlifeTouchSinglePoint{x,y}
+ *           ← 参考实现当前在用的写法（推荐）
+ *   mode 1：通用消息 TOUCH_ACTION + CarlifeTouchAction{action,x,y}
+ *           ← 参考实现里被注释掉的写法
+ * 包头已实证为 CTRL 8 字节（参考源码 CTRL_HEAD_LEN 8，且注释写明
+ * "ctrol channel [HU->MD]"），不再作为参数。 */
+int cl_send_touch_action(SOCKET s, int action, int x, int y, int mode);
+
+/* 车机硬按键（上一曲/下一曲等），同样走 CTRL 通道 */
+int cl_send_hard_key(SOCKET s, int keycode);
 
 /* 生成候选手机地址表（同网段 .1/.129/.100 + 常见 USB 共享地址）。
  * 返回个数；调用前必须先 WSAStartup。 */
