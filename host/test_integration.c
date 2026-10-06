@@ -193,6 +193,10 @@ int main(int argc, char **argv)
     if (touch >= 0) {
         int st = cl_send_touch_action(touch, 1, 100, 80, 0);
         printf("TOUCH_SEND=%d\n", st);
+        /* 触摸包只是写进了本地 socket，还要等转发线程把它搬过去。
+         * 不加这个等待，程序紧接着就 adbp_stop（线程立刻停），
+         * 那几字节还没转发就被丢掉了 —— 测试里踩过。 */
+        usleep(800 * 1000);
     }
 
 done:
