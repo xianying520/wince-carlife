@@ -141,8 +141,30 @@ static void do_run(void)
             if (r == CL_OK) {
                 wsprintfW(tmp, L"[OK] 手机回复 msgId=0x%x 体长=%d", rid, blen);
                 app(tmp);
-                if (rid == CL_MSG_VIDEO_ENCODER_INIT_DONE)
+                if (rid == CL_MSG_VIDEO_ENCODER_INIT_DONE) {
+                    /* 手机回传实际采用的分辨率/帧率：宽=1 高=2 帧率=3，均为 varint */
+                    int w = -1, hh = -1, fr = -1, k = 0;
                     app(L"     = 编码器已就绪");
+                    while (k + 1 < blen) {
+                        int field = (rb[k] >> 3) & 0x1f;
+                        int val = 0, shift = 0;
+                        k++;
+                        while (k < blen && (rb[k] & 0x80)) {
+                            val |= (rb[k] & 0x7f) << shift;
+                            shift += 7;
+                            k++;
+                        }
+                        if (k < blen) {
+                            val |= (rb[k] & 0x7f) << shift;
+                            k++;
+                        }
+                        if (field == 1) w = val;
+                        else if (field == 2) hh = val;
+                        else if (field == 3) fr = val;
+                    }
+                    wsprintfW(tmp, L"     手机采用 %dx%d @%d帧", w, hh, fr);
+                    app(tmp);
+                }
             } else {
                 wsprintfW(tmp, L"[!] 没等到回复（%d），继续", r);
                 app(tmp);
@@ -183,6 +205,17 @@ static void do_run(void)
             }
             frames++;
             total += len;
+            if (frames == 1) {
+                int k, lim = len < 12 ? len : 12;
+                WCHAR hex[64];
+                hex[0] = 0;
+                for (k = 0; k < lim; k++)
+                    wsprintfW(hex + wcslen(hex), L"%02x ", (int)vbuf[k]);
+                wsprintfW(tmp, L"   首帧头部: %s", hex);
+                app(tmp);
+                wsprintfW(tmp, L"   格式判断: %s", cl_guess_codec(vbuf, len));
+                app(tmp);
+            }
             if (frames <= SHOW_FRAMES) {
                 wsprintfW(tmp, L"   帧%d: %d 字节 type=0x%x", frames, len, vt);
                 app(tmp);

@@ -287,6 +287,26 @@ int cl_recv_video(SOCKET s, unsigned long *timestamp, unsigned long *vtype,
     return CL_OK;
 }
 
+/* JPEG 请求无参数 */
+int cl_send_video_encoder_jpeg(SOCKET s)
+{
+    return cl_send_cmd(s, CL_MSG_VIDEO_ENCODER_JPEG, (const unsigned char *)0, 0);
+}
+
+/* 靠帧头签名猜编码格式 —— 现场最便宜也最有效的诊断 */
+const WCHAR *cl_guess_codec(const unsigned char *p, int len)
+{
+    if (len >= 2 && p[0] == 0xff && p[1] == 0xd8)
+        return L"JPEG  (FFD8)";
+    if (len >= 4 && p[0] == 0x00 && p[1] == 0x00 && p[2] == 0x00 && p[3] == 0x01)
+        return L"H.264 (00000001)";
+    if (len >= 3 && p[0] == 0x00 && p[1] == 0x00 && p[2] == 0x01)
+        return L"H.264 (000001)";
+    if (len >= 4 && p[0] == 0x00 && p[1] == 0x00 && p[2] == 0x00 && p[3] == 0x00)
+        return L"全零(可能无数据)";
+    return L"未知格式";
+}
+
 /* 生成候选手机地址：本机同网段 .1/.129/.100 + 常见 USB 网络共享地址。
  * 返回写入 out 的个数。调用前必须先 WSAStartup。 */
 int cl_candidate_ips(unsigned long *out, int max)

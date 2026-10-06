@@ -180,7 +180,33 @@ static void do_probe(void)
         }
     }
 
-    /* ⑤ CarLife 协议握手 —— 决定性一步 */
+    /* ⑤ 探测车机上有哪些解码器 DLL —— 决定 H.264 怎么解
+     * 注意：TCC89X_VDEC/VDEC_785 这类是亿连自带的硬解 DLL，
+     * 只有在「与本程序同一个目录」时 LoadLibrary 才找得到，
+     * 所以务必把本程序放在车机上亿连的目录里运行。 */
+    app(L"");
+    app(L"--- 解码器 DLL 探测 ---");
+    {
+        static const WCHAR *dlls[9];
+        int k;
+        dlls[0] = L"TCC89X_VDEC.dll";
+        dlls[1] = L"VDEC_785.dll";
+        dlls[2] = L"VDEC_DCH60.dll";
+        dlls[3] = L"vdec.dll";
+        dlls[4] = L"h264dec.dll";
+        dlls[5] = L"imgdecmp.dll";
+        dlls[6] = L"ddraw.dll";
+        dlls[7] = L"ws2.dll";
+        dlls[8] = L"aygshell.dll";
+
+        for (k = 0; k < 9; k++) {
+            HMODULE hm = LoadLibraryW(dlls[k]);
+            wsprintfW(tmp, L"  %s %s", hm ? L"[有]" : L"[无]", dlls[k]);
+            app(tmp);
+        }
+    }
+
+    /* ⑥ CarLife 协议握手 —— 决定性一步 */
     app(L"");
     app(L"--- CarLife 协议握手 ---");
     if (cmd_ip == 0) {

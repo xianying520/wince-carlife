@@ -29,6 +29,8 @@
 #define CL_MSG_VIDEO_ENCODER_INIT         0x00018007UL
 #define CL_MSG_VIDEO_ENCODER_INIT_DONE    0x00010008UL
 #define CL_MSG_VIDEO_ENCODER_START        0x00018009UL
+#define CL_MSG_VIDEO_ENCODER_JPEG         0x00018056UL
+#define CL_MSG_VIDEO_ENCODER_JPEG_ACK     0x00010057UL
 #define CL_MSG_HU_AUTHEN_REQUEST          0x00018048UL
 #define CL_MSG_MD_AUTHEN_RESPONSE         0x00010049UL
 
@@ -71,6 +73,13 @@ int cl_send_video_encoder_init(SOCKET s, int w, int h, int fps);
 
 /* 通知手机开始推流。 */
 int cl_send_video_encoder_start(SOCKET s);
+
+/* 请求手机改用 JPEG 方式推帧（若手机支持，解码难度远低于 H.264）。
+ * 手机成功会回 MSG_CMD_VIDEO_ENCODER_JPEG_ACK(0x00010057)。 */
+int cl_send_video_encoder_jpeg(SOCKET s);
+
+/* 判断一帧数据的编码格式，返回可读字符串（用于现场诊断）。 */
+const WCHAR *cl_guess_codec(const unsigned char *p, int len);
 
 /* 生成候选手机地址表（同网段 .1/.129/.100 + 常见 USB 共享地址）。
  * 返回个数；调用前必须先 WSAStartup。 */
