@@ -190,11 +190,15 @@ def adbd(ready, state):
                     send_msg(conn, CLSE, 0, a0)
 
             elif cmd == WRTE:
+                # ⚠ ADB 的 arg0/arg1 语义（这里一度写反过）：
+                #   车机→手机 WRTE: arg0 = 车机本地 id，arg1 = 手机 id
+                #   手机→车机 OKAY: arg0 = 手机 id，arg1 = 车机本地 id
+                #   所以应答时要回 arg0，不是 arg1。
                 recv_log.append(data)
-                send_msg(conn, OKAY, remote_id, a1)
+                send_msg(conn, OKAY, remote_id, a0)
                 # 只对 tcp 通道做回显，shell 通道不需要
-                if tcp_local is not None and a1 == tcp_local:
-                    send_msg(conn, WRTE, remote_id, a1, data)
+                if tcp_local is not None and a0 == tcp_local:
+                    send_msg(conn, WRTE, remote_id, a0, data)
                     m2 = read_msg(conn)
                     if m2 and m2[0] == OKAY:
                         state["echo_acked"] = True
@@ -270,13 +274,12 @@ def main():
           state.get("sig_ok") is True,
           "" if state.get("sig_ok") else f"还原块开头 {state.get('sig_head','?')}")
 
-    # ③ OPEN
-    op = state.get("open")
-    check("收到 OPEN", bool(op) and op[0] == OPEN)
-    if op:
-        check("OPEN 的服务名 = tcp:7240",
-              op[2].rstrip(b"\x00") == b"tcp:7240",
-              repr(op[2][:24]))
+    # ③ OPEN（服务名记在 state["opens"] 里）
+    opens0 = state.get("opens", [])
+    tcp_opens = [o for o in opens0 if o.startswith("tcp:")]
+    check("收到 OPEN", len(tcp_opens) > 0, f"共 {len(opens0)} 次")
+    check("OPEN 的服务名 = tcp:7240", tcp_opens and tcp_opens[0] == "tcp:7240",
+          str(tcp_opens[:3]))
 
     # ④ 数据
     check("收到 WRTE 且内容正确", recv_log and recv_log[0] == b"hello-from-hu",
