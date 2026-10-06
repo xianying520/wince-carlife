@@ -45,6 +45,13 @@ jobs:
           find "$HOME/tc" -name 'libws2*' -o -name 'ws2*def' 2>/dev/null | head
           make probe
 
+      # 客户端同样属于加分项，但它的编译错误最有诊断价值（协议层首次编译）
+      - name: 编译主客户端（失败不阻塞交付）
+        continue-on-error: true
+        run: |
+          export PATH="$HOME/tc/cegcc/bin:$PATH"
+          make client
+
       - name: 校验产物是 WinCE ARM PE
         run: |
           python3 - <<'PY'

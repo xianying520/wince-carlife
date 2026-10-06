@@ -12,12 +12,13 @@ CFLAGS  := -Os -Wall -DUNICODE -D_UNICODE -Isrc
 # -mwindows : PE 子系统 = WINDOWS_CE_GUI（车机只认 GUI 子系统）
 LDFLAGS := -mwindows -s
 
-MAIN_EXE  := $(BUILD)/WinCE-CarLifeHU.exe
-PROBE_EXE := $(BUILD)/WinCE-NetProbe.exe
+MAIN_EXE   := $(BUILD)/WinCE-CarLifeHU.exe
+PROBE_EXE  := $(BUILD)/WinCE-NetProbe.exe
+CLIENT_EXE := $(BUILD)/WinCE-CarLifeClient.exe
 
-.PHONY: all main probe check clean
+.PHONY: all main probe client check clean
 
-all: main probe
+all: main probe client
 
 main: $(MAIN_EXE)
 	@echo "==> 主程序: $(MAIN_EXE)"
@@ -35,6 +36,9 @@ $(BUILD)/main.o: src/main.c | $(BUILD)
 $(BUILD)/netprobe.o: src/netprobe.c src/carlife.h | $(BUILD)
 	$(CC) $(CFLAGS) -c $< -o $@
 
+$(BUILD)/huclient.o: src/huclient.c src/carlife.h | $(BUILD)
+	$(CC) $(CFLAGS) -c $< -o $@
+
 $(BUILD)/carlife.o: src/carlife.c src/carlife.h | $(BUILD)
 	$(CC) $(CFLAGS) -c $< -o $@
 
@@ -42,6 +46,14 @@ $(MAIN_EXE): $(BUILD)/main.o
 	$(CC) $(LDFLAGS) -o $@ $^ -lcoredll
 
 $(PROBE_EXE): $(BUILD)/netprobe.o $(BUILD)/carlife.o
+	$(CC) $(LDFLAGS) -o $@ $^ -lcoredll -lws2
+
+# 主客户端：握手 + 视频初始化 + 收帧（也链 ws2）
+client: $(CLIENT_EXE)
+	@echo "==> 客户端: $(CLIENT_EXE)"
+	@ls -l $(CLIENT_EXE)
+
+$(CLIENT_EXE): $(BUILD)/huclient.o $(BUILD)/carlife.o
 	$(CC) $(LDFLAGS) -o $@ $^ -lcoredll -lws2
 
 $(BUILD):

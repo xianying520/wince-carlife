@@ -212,3 +212,115 @@ int cl_handshake(SOCKET s, int *match_status, unsigned long *reply_id)
     }
     return CL_OK;
 }
+
+/* ══ protobuf 最小编码器 ══
+ * CarLife 的消息体是 protobuf，但本阶段用到的报文都很简单，
+ * 手写 varint 即可，不必引入 protobuf 库。
+ *   tag 字节 = (字段号 << 3) | 线格式 ；varint(int32) 的线格式 = 0 */
+static int pb_varint(unsigned char *out, unsigned long v)
+{
+    int n = 0;
+    do {
+        unsigned char b = (unsigned char)(v & 0x7f);
+        v >>= 7;
+        if (v)
+            b |= 0x80;
+        out[n++] = b;
+    } while (v && n < 10);
+    return n;
+}
+
+static int pb_int32(unsigned char *out, int field, int value)
+{
+    int n = 0;
+    out[n++] = (unsigned char)((field << 3) & 0xff);
+    n += pb_varint(out + n, (unsigned long)value);
+    return n;
+}
+
+/* CarlifeVideoEncoderInfo{width=1, height=2, frameRate=3} —— 全是 required int32 */
+int cl_send_video_encoder_init(SOCKET s, int w, int h, int fps)
+{
+    unsigned char body[32];
+    int n = 0;
+
+    n += pb_int32(body + n, 1, w);
+    n += pb_int32(body + n, 2, h);
+    n += pb_int32(body + n, 3, fps);
+
+    return cl_send_cmd(s, CL_MSG_VIDEO_ENCODER_INIT, body, n);
+}
+
+/* VIDEO_ENCODER_START 没有参数，数据体为空 */
+int cl_send_video_encoder_start(SOCKET s)
+{
+    return cl_send_cmd(s, CL_MSG_VIDEO_ENCODER_START, (const unsigned char *)0, 0);
+}
+
+int cl_recv_video(SOCKET s, unsigned long *timestamp, unsigned long *vtype,
+                  unsigned char *buf, int cap, int *len, int timeout_ms)
+{
+    unsigned char hdr[CL_HDR_MEDIA];
+    int want, r;
+
+    r = recv_all(s, hdr, CL_HDR_MEDIA, timeout_ms);
+    if (r != CL_OK)
+        return r;
+
+    want = (int)get_be32(hdr);
+    if (timestamp)
+        *timestamp = get_be32(hdr + 4);
+    if (vtype)
+        *vtype = get_be32(hdr + 8);
+
+    if (want > cap)
+        want = cap;
+    if (want < 0)
+        want = 0;
+
+    if (want > 0) {
+        r = recv_all(s, buf, want, timeout_ms);
+        if (r != CL_OK)
+            return r;
+    }
+    *len = want;
+    return CL_OK;
+}
+
+/* 生成候选手机地址：本机同网段 .1/.129/.100 + 常见 USB 网络共享地址。
+ * 返回写入 out 的个数。调用前必须先 WSAStartup。 */
+int cl_candidate_ips(unsigned long *out, int max)
+{
+    char host[128];
+    struct hostent *he;
+    int n = 0, i;
+    static const unsigned char tail[3] = { 1, 129, 100 };
+    static const unsigned char fix[6][4] = {
+        { 192, 168,  42, 129 }, { 192, 168,  42,   1 }, { 192, 168, 43,   1 },
+        { 192, 168, 137,   1 }, { 192, 168,   0,   1 }, { 192, 168,  1,   1 }
+    };
+
+    host[0] = 0;
+    if (gethostname(host, sizeof(host)) != 0)
+        host[0] = 0;
+
+    if (host[0]) {
+        he = gethostbyname(host);
+        if (he && he->h_addr_list && he->h_addr_list[0]) {
+            unsigned char b[4];
+            memcpy(b, he->h_addr_list[0], 4);
+            for (i = 0; i < 3 && n < max; i++) {
+                unsigned long c;
+                b[3] = tail[i];
+                memcpy(&c, b, 4);
+                out[n++] = c;
+            }
+        }
+    }
+    for (i = 0; i < 6 && n < max; i++) {
+        unsigned long c;
+        memcpy(&c, fix[i], 4);
+        out[n++] = c;
+    }
+    return n;
+}

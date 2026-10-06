@@ -65,4 +65,20 @@ int cl_recv_cmd(SOCKET s, unsigned long *msg_id,
  * 成功返回 CL_OK 并把手机返回的 matchStatus 写进 *match_status。 */
 int cl_handshake(SOCKET s, int *match_status, unsigned long *reply_id);
 
+/* ── 视频通道 ──
+ * 通知手机"以 w x h @ fps 编码"，手机回 VIDEO_ENCODER_INIT_DONE。 */
+int cl_send_video_encoder_init(SOCKET s, int w, int h, int fps);
+
+/* 通知手机开始推流。 */
+int cl_send_video_encoder_start(SOCKET s);
+
+/* 生成候选手机地址表（同网段 .1/.129/.100 + 常见 USB 共享地址）。
+ * 返回个数；调用前必须先 WSAStartup。 */
+int cl_candidate_ips(unsigned long *out, int max);
+
+/* 接收一个视频包（12 字节包头：size/timestamp/type，全 BE）。
+ * 返回 CL_OK 并把时间戳、类型、数据体回填。 */
+int cl_recv_video(SOCKET s, unsigned long *timestamp, unsigned long *vtype,
+                  unsigned char *buf, int cap, int *len, int timeout_ms);
+
 #endif /* CARLIFE_H */
