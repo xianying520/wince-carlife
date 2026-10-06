@@ -17,6 +17,7 @@
 #include <winsock2.h>
 #include <windows.h>
 #include <string.h>
+#include "carlife.h"
 
 #define REPORT_CAP 8192
 #define MAX_IP     8
@@ -49,40 +50,9 @@ static void ip_str(unsigned long ip_be, WCHAR *out)
  * 1 = 连上, 0 = 拒绝或超时, -1 = socket 创建失败 */
 static int tcp_test(unsigned long ip_be, int port, int timeout_ms)
 {
-    SOCKET s;
-    struct sockaddr_in sa;
-    struct timeval tv;
-    fd_set wf;
-    u_long nb = 1;
-    int r;
-
-    s = socket(AF_INET, SOCK_STREAM, IPPROTO_TCP);
+    SOCKET s = cl_connect(ip_be, port, timeout_ms);
     if (s == INVALID_SOCKET)
-        return -1;
-
-    ioctlsocket(s, FIONBIO, &nb);
-
-    memset(&sa, 0, sizeof(sa));
-    sa.sin_family      = AF_INET;
-    sa.sin_port        = htons((unsigned short)port);
-    sa.sin_addr.s_addr = ip_be;
-
-    r = connect(s, (struct sockaddr *)&sa, sizeof(sa));
-    if (r == SOCKET_ERROR) {
-        if (WSAGetLastError() != WSAEWOULDBLOCK) {
-            closesocket(s);
-            return 0;
-        }
-        FD_ZERO(&wf);
-        FD_SET(s, &wf);
-        tv.tv_sec  = timeout_ms / 1000;
-        tv.tv_usec = (timeout_ms % 1000) * 1000;
-        r = select(0, NULL, &wf, NULL, &tv);
-        if (r <= 0) {
-            closesocket(s);
-            return 0;
-        }
-    }
+        return 0;
     closesocket(s);
     return 1;
 }
@@ -97,6 +67,7 @@ static void do_probe(void)
     WCHAR ips[MAX_IP][24];
     unsigned long raw[MAX_IP];
     int nip = 0, i, j, hit = 0;
+    unsigned long cmd_ip = 0;   /* 首个 CarLife 控制端口可达的手机地址 */
 
     static const int    ports[3] = { 7240, 8240, 5555 };
     static const WCHAR *pname[3] = { L"CarLife控制", L"CarLife视频", L"ADB" };
@@ -188,6 +159,8 @@ static void do_probe(void)
             WCHAR s[24];
             int any = 0;
             ip_str(cand[i], s);
+            if (cmd_ip == 0 && tcp_test(cand[i], CL_PORT_CMD, 450) == 1)
+                cmd_ip = cand[i];
             for (j = 0; j < 3; j++) {
                 if (tcp_test(cand[i], ports[j], 450) == 1) {
                     if (!any) {
@@ -204,6 +177,38 @@ static void do_probe(void)
                 wsprintfW(tmp, L"  %s : 无响应", s);
                 app(tmp);
             }
+        }
+    }
+
+    /* ⑤ CarLife 协议握手 —— 决定性一步 */
+    app(L"");
+    app(L"--- CarLife 协议握手 ---");
+    if (cmd_ip == 0) {
+        app(L"  控制端口 7240 不可达，跳过握手");
+    } else {
+        SOCKET cs = cl_connect(cmd_ip, CL_PORT_CMD, 1500);
+        if (cs == INVALID_SOCKET) {
+            app(L"[X] 再连 7240 失败");
+        } else {
+            int ms = -1, r;
+            unsigned long rid = 0;
+            app(L"[OK] 已连上 7240，发送车机协议版本 1.0 ...");
+            r = cl_handshake(cs, &ms, &rid);
+            if (r == CL_OK) {
+                wsprintfW(tmp, L"[OK] 手机回复 msgId=0x%x", rid);
+                app(tmp);
+                wsprintfW(tmp, L"      matchStatus=%d", ms);
+                app(tmp);
+                if (rid == CL_MSG_PROTOCOL_VERSION_MATCH)
+                    app(L"*** 握手成功！手机认我们了 ***");
+                else
+                    app(L"收到回复但消息 ID 不是版本匹配，看上面");
+            } else {
+                wsprintfW(tmp, L"[X] 握手失败，错误码 %d", r);
+                app(tmp);
+                app(L"   (-3=连接被关,-4=等回复超时)");
+            }
+            closesocket(cs);
         }
     }
 

@@ -32,13 +32,16 @@ probe: $(PROBE_EXE)
 $(BUILD)/main.o: src/main.c | $(BUILD)
 	$(CC) $(CFLAGS) -c $< -o $@
 
-$(BUILD)/netprobe.o: src/netprobe.c | $(BUILD)
+$(BUILD)/netprobe.o: src/netprobe.c src/carlife.h | $(BUILD)
+	$(CC) $(CFLAGS) -c $< -o $@
+
+$(BUILD)/carlife.o: src/carlife.c src/carlife.h | $(BUILD)
 	$(CC) $(CFLAGS) -c $< -o $@
 
 $(MAIN_EXE): $(BUILD)/main.o
 	$(CC) $(LDFLAGS) -o $@ $^ -lcoredll
 
-$(PROBE_EXE): $(BUILD)/netprobe.o
+$(PROBE_EXE): $(BUILD)/netprobe.o $(BUILD)/carlife.o
 	$(CC) $(LDFLAGS) -o $@ $^ -lcoredll -lws2
 
 $(BUILD):
