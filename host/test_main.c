@@ -73,6 +73,8 @@ int main(int argc, char **argv)
         return 1;
 
     r = cl_handshake(cmd, &match, &reply);
+    printf("     [诊断] cl_handshake 返回 %d"
+           "（0=成功 -1=socket错 -2=发失败 -3=收失败 -4=等回复超时）\n", r);
     ck("握手调用成功", r == CL_OK);
     printf("     手机回的消息 ID = 0x%08lx  matchStatus = %d\n", reply, match);
     ck("收到的是版本匹配消息", reply == CL_MSG_PROTOCOL_VERSION_MATCH);

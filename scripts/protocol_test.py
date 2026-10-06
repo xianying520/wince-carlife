@@ -230,12 +230,16 @@ def main():
         print("  ⚠ 诊断程序编译失败：", r.stderr[:400])
     else:
         # 诊断要连一个真实在听的端口，所以先临时起一个
+        # ⚠ 诊断必须用【独立端口】。之前让它借用 7240，会在正式测试之前
+        #   在那个端口上留下一条被 RST 的连接，污染真正的测试 —— 这个坑已经踩过。
+        DIAG_PORT = 7999
         _probe = socket.socket()
         _probe.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
         try:
-            _probe.bind((HOST, PORT_CMD))
+            _probe.bind((HOST, DIAG_PORT))
             _probe.listen(1)
-            d = subprocess.run(["/tmp/cl_diag"], capture_output=True, text=True, timeout=30)
+            d = subprocess.run(["/tmp/cl_diag", str(DIAG_PORT)],
+                               capture_output=True, text=True, timeout=30)
             print(d.stdout, end="")
             if d.stderr.strip():
                 print(d.stderr, end="")

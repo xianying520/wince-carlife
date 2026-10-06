@@ -4,7 +4,7 @@
 
 #include <sys/socket.h>
 
-int main(void)
+int main(int argc, char **argv)
 {
     SOCKET s;
     struct sockaddr_in sa;
@@ -14,7 +14,9 @@ int main(void)
     int r, soerr = -1;
     socklen_t sl = sizeof(soerr);
 
-    printf("══ 逐步复刻 cl_connect ══\n");
+    unsigned short port = (unsigned short)(argc > 1 ? atoi(argv[1]) : 7999);
+
+    printf("══ 逐步复刻 cl_connect（端口 %u）══\n", (unsigned)port);
 
     errno = 0;
     s = socket(AF_INET, SOCK_STREAM, IPPROTO_TCP);
@@ -28,7 +30,7 @@ int main(void)
 
     memset(&sa, 0, sizeof(sa));
     sa.sin_family      = AF_INET;
-    sa.sin_port        = htons(7240);
+    sa.sin_port        = htons(port);
     sa.sin_addr.s_addr = htonl(0x7F000001UL);
 
     errno = 0;
