@@ -59,9 +59,15 @@ void disp_set_rgb24(DISP *d, const unsigned char *rgb, int w, int h)
         p[1] = rgb[i * 3 + 1];
         p[2] = rgb[i * 3 + 0];
         p[3] = 0;
+        p += 4;                     /* ⚠ 必须前进。漏掉这一行的话，每一轮都在
+                                     *   覆盖同一个 4 字节 —— 结果整块屏黑、只有
+                                     *   左上角一个像素有颜色。
+                                     *   这个 bug 极难靠肉眼发现：用纯色/纯灰的
+                                     *   测试图时，写一个和写全部的结果一模一样，
+                                     *   所有"看起来正常"的测试都会通过。只有
+                                     *   逐像素断言不同值的图才逼得出来。 */
     }
     /* 源缓冲来自 nanojpeg，用完即可释放，这里不动它 */
-    (void)p;
 }
 
 void disp_set_gray8(DISP *d, const unsigned char *gray, int w, int h)
@@ -79,6 +85,7 @@ void disp_set_gray8(DISP *d, const unsigned char *gray, int w, int h)
         p[1] = g;
         p[2] = g;
         p[3] = 0;
+        p += 4;                     /* 同上，必须前进 */
     }
 }
 

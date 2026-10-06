@@ -63,20 +63,40 @@ int main(void)
                      rgb[0], rgb[1], rgb[2], rgb[3]);
             check("（颜色顺序没有反）", rgb[2] == 255, buf);
         }
+        /* 再换成【逐像素不同】的图案。
+         * 这一步是必需的：纯色/纯灰图抓不到"忘了写 p += 4"这类 bug ——
+         * 每个像素都一样时，只写一个和写满屏的结果完全相同，测试全绿而
+         * 真机上是漆黑一片只有左上角一个点。必须让每个像素都不一样。 */
         {
-            char buf[200];
+            static unsigned char pat[32 * 16 * 3];
             int k, bad = 0, firstbad = -1;
-            for (k = 0; k < 32 * 16; k++)
-                if (f[k * 4 + 2] != 255) {
+
+            for (k = 0; k < 32 * 16; k++) {
+                pat[k * 3 + 0] = (unsigned char)(k & 0xFF);          /* R */
+                pat[k * 3 + 1] = (unsigned char)((k * 3) & 0xFF);    /* G */
+                pat[k * 3 + 2] = (unsigned char)((k * 7) & 0xFF);    /* B */
+            }
+            disp_set_rgb24(&d, pat, 32, 16);
+
+            for (k = 0; k < 32 * 16; k++) {
+                if (f[k * 4 + 0] != (unsigned char)((k * 7) & 0xFF) ||
+                    f[k * 4 + 1] != (unsigned char)((k * 3) & 0xFF) ||
+                    f[k * 4 + 2] != (unsigned char)(k & 0xFF)) {
                     bad++;
-                    if (firstbad < 0) firstbad = k;
+                    if (firstbad < 0)
+                        firstbad = k;
                 }
-            snprintf(buf, sizeof(buf),
-                     "fb=%p f=%p sw=%d sh=%d cap=%d | f[2]=%d f[2046]=%d | "
-                     "R!=255 的像素 %d 个，第一个是第 %d 个",
-                     (void *)d.fb, (void *)f, d.sw, d.sh, d.fbcap,
-                     f[2], f[2046], bad, firstbad);
-            check("最后一个像素也写到了", f[(32 * 16 - 1) * 4 + 2] == 255, buf);
+            }
+            {
+                char buf[128];
+                snprintf(buf, sizeof(buf),
+                         "512 个像素逐一核对，错 %d 个（第一个是第 %d 个）",
+                         bad, firstbad);
+                check("★ 逐像素图案全部对得上（能抓出漏写 p += 4）",
+                      bad == 0, buf);
+            }
+            check("最后一个像素也写到了", f[511 * 4 + 2] == (unsigned char)(511 & 0xFF),
+                  "");
         }
     }
 
