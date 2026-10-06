@@ -61,6 +61,10 @@ SOCKET cl_connect(unsigned long ip_be, int port, int timeout_ms)
     sa.sin_port        = htons((unsigned short)port);
     sa.sin_addr.s_addr = ip_be;
 
+    /* ⚠ select 的第一个参数必须是「最大 fd + 1」。
+     * WinSock 会忽略它，所以传 0 在车机上照样能跑 —— 于是这个错很难被发现；
+     * 但 POSIX 是真的按它来决定的，传 0 就是"一个都不检查，纯睡满超时"，
+     * 结果永远连不上。这个错是主机的端到端测试抓出来的，别再改回去。 */
     r = connect(s, (struct sockaddr *)&sa, sizeof(sa));
     if (r == SOCKET_ERROR) {
         if (WSAGetLastError() != WSAEWOULDBLOCK) {
@@ -71,7 +75,7 @@ SOCKET cl_connect(unsigned long ip_be, int port, int timeout_ms)
         FD_SET(s, &wf);
         tv.tv_sec  = timeout_ms / 1000;
         tv.tv_usec = (timeout_ms % 1000) * 1000;
-        r = select(0, NULL, &wf, NULL, &tv);
+        r = select((int)s + 1, NULL, &wf, NULL, &tv);
         if (r <= 0) {
             closesocket(s);
             return INVALID_SOCKET;
@@ -96,7 +100,7 @@ static int send_all(SOCKET s, const unsigned char *p, int len, int timeout_ms)
         FD_SET(s, &wf);
         tv.tv_sec  = timeout_ms / 1000;
         tv.tv_usec = (timeout_ms % 1000) * 1000;
-        r = select(0, NULL, &wf, NULL, &tv);
+        r = select((int)s + 1, NULL, &wf, NULL, &tv);
         if (r <= 0)
             return CL_ERR_TIMEOUT;
         r = send(s, (const char *)(p + sent), len - sent, 0);
@@ -119,7 +123,7 @@ static int recv_all(SOCKET s, unsigned char *p, int len, int timeout_ms)
         FD_SET(s, &rf);
         tv.tv_sec  = timeout_ms / 1000;
         tv.tv_usec = (timeout_ms % 1000) * 1000;
-        r = select(0, &rf, NULL, NULL, &tv);
+        r = select((int)s + 1, &rf, NULL, NULL, &tv);
         if (r <= 0)
             return CL_ERR_TIMEOUT;
         r = recv(s, (char *)(p + got), len - got, 0);
