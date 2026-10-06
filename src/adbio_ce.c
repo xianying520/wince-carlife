@@ -7,6 +7,20 @@
 static HANDLE g_h = INVALID_HANDLE_VALUE;
 static WCHAR  g_name[64];
 
+/* 手写的宽字符串拷贝。
+ * ⚠ 刻意不用 lstrcpynW / lstrcpyW：手上的 COREDLL 导出表里没有它们
+ *   （只有 lstrcmpW / lstrcmpiW）。虽然本次链接通过了，但一旦真机上缺这个
+ *   导出，程序会「一点就闪退」—— 这种代价太大，不值得为省一个循环去赌。
+ *   手写 8 行的循环，行为完全确定。 */
+static void w_copy(WCHAR *dst, const WCHAR *src, int cap)
+{
+    int i;
+    if (cap <= 0) return;
+    for (i = 0; i < cap - 1 && src[i]; i++)
+        dst[i] = src[i];
+    dst[i] = 0;
+}
+
 /* 候选设备名。ADB1: 是 EasyConnected 实际在用的名字（见 docs/ 里的证据），
  * 其余的是常见变体，多试几个不吃亏。 */
 static const WCHAR *g_cands[] = {
@@ -76,9 +90,9 @@ int adbio_ce_open(WCHAR *out_name, int name_cap, char *reason, int reason_cap)
                                0, NULL, OPEN_EXISTING, 0, NULL);
         if (h != INVALID_HANDLE_VALUE) {
             g_h = h;
-            lstrcpynW(g_name, g_cands[i], 63);
+            w_copy(g_name, g_cands[i], 64);
             if (out_name && name_cap > 0)
-                lstrcpynW(out_name, g_cands[i], name_cap - 1);
+                w_copy(out_name, g_cands[i], name_cap);
             if (reason && reason_cap > 0)
                 sprintf(reason, "已打开 ADB 设备 %ls", g_cands[i]);
             return 0;
