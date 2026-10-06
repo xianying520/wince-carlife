@@ -167,16 +167,26 @@ def video_handler(conn):
 
     data = open("/tmp/test_gray32x16.jpg", "rb").read()
     phone_state["video_jpeg_len"] = len(data)
-    # 12 字节头：长度(4) 时间戳(4) 类型(4)，全部大端
-    conn.sendall(struct.pack(">III", len(data), 1, 0x00000001) + data)
-    phone_state["video_sent"] = True
-    # 多推几帧，确保客户端一定拿到（它可能在别的时机才开始收）
-    for _ in range(3):
-        time.sleep(0.3)
+
+    # ① 先推一帧【故意超大】的（5KB，远大于客户端的 1KB 测试缓冲）。
+    #    这是为了逼出"帧比缓冲大"时那段清理逻辑 —— 它以前从没被执行过。
+    #    帧头故意写成 JPEG 的 FF D8，让它看起来像真帧，后面是真垃圾数据。
+    big = b"\xff\xd8" + bytes((k * 37) & 0xFF for k in range(5120))
+    phone_state["big_sent"] = len(big)
+    conn.sendall(struct.pack(">III", len(big), 0, 0x00000001) + big)
+    time.sleep(0.5)
+
+    # ② 再连续推真 JPEG 多帧：客户端应当每一帧都收得到。
+    #    挨过超大帧之后如果流错位了，这里就只能收到很少几帧。
+    phone_state["jpeg_frames"] = 0
+    for _ in range(6):
         try:
             conn.sendall(struct.pack(">III", len(data), 2, 0x00000001) + data)
+            phone_state["jpeg_frames"] += 1
         except Exception:                                    # noqa: BLE001
             break
+        time.sleep(0.25)
+    phone_state["video_sent"] = True
     time.sleep(2)
 
 
@@ -407,6 +417,10 @@ def main():
           == bytes([0x08, 0x20, 0x10, 0x10, 0x18, 0x05]),
           str(phone_state.get("video_init", b"").hex()))
 
+    check("★ 超大帧（5KB）被收下并按缓冲截断",
+          vals.get("BIGFRAME_GOT") == "1" and vals.get("BIGFRAME_TRUNCATED") == "1",
+          f"len={vals.get('BIGFRAME_LEN')}")
+
     check("★ 客户端收到了视频帧", vals.get("FRAME_GOT") == "1")
     check("★ 收到的是 JPEG（FF D8 开头）",
           vals.get("FRAME_IS_JPEG") == "是", vals.get("FRAME_HEAD", ""))
@@ -418,6 +432,11 @@ def main():
           vals.get("DECODED_ALL_128") == "1",
           f"首={vals.get('DECODED_PX0')} 末={vals.get('DECODED_PXLAST')} "
           f"大小={vals.get('DECODED_SIZE')}")
+
+    check("★ ★ 挨过超大帧之后流仍同步（连收多帧）",
+          int(vals.get("MORE_FRAMES", "0")) >= 4,
+          f"又收到 {vals.get('MORE_FRAMES')} 帧 / 手机共推 "
+          f"{phone_state.get('jpeg_frames')} 帧")
 
     check("★ 触摸回传发出去了", vals.get("TOUCH_SEND") == "0",
           vals.get("TOUCH_SEND"))

@@ -145,7 +145,31 @@ int main(int argc, char **argv)
     printf("TOUCH_CONNECT=%s\n", touch >= 0 ? "成功" : "失败");
     if (touch >= 0) cl_resend_version(cmd);
 
-    /* ⑥ 收视频帧并解码 —— 这是现场"看到画面"的完整路径 */
+    /* ⑥a 先用【故意偏小】的缓冲收一帧超大帧。
+     *
+     * 这一段专门验"帧比缓冲大"时的清理逻辑：多出来的字节必须被吃干净，
+     * 否则下一帧的包头就会从帧中间开始读，整个流从此全乱 ——
+     * 现场表现是"刚连上能看到，几帧之后画面就废了"，很容易被误判成协议不对。
+     *
+     * 这段代码以前从来没被执行过：所有测试用的缓冲都远大于帧。 */
+    {
+        static unsigned char tiny[1024];
+        unsigned long ts = 0, vt = 0;
+        int len = 0, got = 0;
+
+        for (i = 0; i < 40 && !got; i++) {
+            r = cl_recv_video(vid, &ts, &vt, tiny, (int)sizeof(tiny), &len, 800);
+            if (r == CL_OK && len > 0) {
+                got = 1;
+                printf("BIGFRAME_LEN=%d\n", len);
+            }
+        }
+        printf("BIGFRAME_GOT=%d\n", got);
+        printf("BIGFRAME_TRUNCATED=%d\n",
+               (got && len == (int)sizeof(tiny)) ? 1 : 0);
+    }
+
+    /* ⑥b 再用正常缓冲收 —— 必须能收到并解码出正确的一帧 */
     {
         static unsigned char frame[512 * 1024];
         static unsigned char decoded[512 * 1024];
@@ -187,6 +211,21 @@ int main(int argc, char **argv)
                 }
             }
         }
+    }
+
+    /* ⑥c 继续收后续帧 —— 验证挨过超大帧之后流还是同步的。
+     * 只能收到一帧的话，说明清理逻辑没做干净。 */
+    {
+        static unsigned char frame[512 * 1024];
+        unsigned long ts = 0, vt = 0;
+        int len = 0, more = 0, k;
+
+        for (k = 0; k < 30; k++) {
+            r = cl_recv_video(vid, &ts, &vt, frame, (int)sizeof(frame), &len, 600);
+            if (r == CL_OK && len >= 2 && frame[0] == 0xFF && frame[1] == 0xD8)
+                more++;
+        }
+        printf("MORE_FRAMES=%d\n", more);
     }
 
     /* ⑦ 触摸回传（走真实的触摸编码） */
