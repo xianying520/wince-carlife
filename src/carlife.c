@@ -118,14 +118,30 @@ static int recv_all(SOCKET s, unsigned char *p, int len, int timeout_ms)
     while (got < len) {
         fd_set rf;
         struct timeval tv;
-        int r;
+        int r, wait;
+
+        /* ⚠ 超时不能每一轮都用同一个 timeout_ms。
+         *
+         *   原来是每轮 select 都等 timeout_ms（调用方传 20ms），于是只要一条
+         *   消息【读到一半、下一半晚到一点】，就返回"超时" —— 而已经读到的
+         *   那几个字节就这样被丢掉了。调用方只当它是"暂时没数据"继续跑，
+         *   下一次便从消息中间开始读 —— 整个流从此永久错位。
+         *   现场表现是"刚连上画面正常，过一会儿就全花"，几乎不可能靠读代码
+         *   想明白。本机环回永远复现不了：它快得不会卡在中间。
+         *
+         *   现在的规则：
+         *     · 一个字节都还没读到 → 用 timeout_ms（保持"轮询"语义，不阻塞 UI）
+         *     · 已经开始读了       → 给足时间把这一条读完，绝不半途丢字节
+         */
+        wait = (got == 0) ? timeout_ms : CL_PARTIAL_WAIT_MS;
+
         FD_ZERO(&rf);
         FD_SET(s, &rf);
-        tv.tv_sec  = timeout_ms / 1000;
-        tv.tv_usec = (timeout_ms % 1000) * 1000;
+        tv.tv_sec  = wait / 1000;
+        tv.tv_usec = (wait % 1000) * 1000;
         r = select((int)s + 1, &rf, NULL, NULL, &tv);
         if (r <= 0)
-            return CL_ERR_TIMEOUT;
+            return (got == 0) ? CL_ERR_TIMEOUT : CL_ERR_RECV;
         r = recv(s, (char *)(p + got), len - got, 0);
         if (r <= 0)
             return CL_ERR_RECV;

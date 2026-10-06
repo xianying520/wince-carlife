@@ -176,7 +176,26 @@ def video_handler(conn):
     conn.sendall(struct.pack(">III", len(big), 0, 0x00000001) + big)
     time.sleep(0.5)
 
-    # ② 再连续推真 JPEG 多帧：客户端应当每一帧都收得到。
+    # ② 【关键回归】把一帧拆开发：包头分两段、包体分三段，中间各停一下。
+    #
+    #    真机 USB 链路上数据本来就是分段的，这几乎是常态。而"读到一半超时就
+    #    把已读字节丢掉"那个 bug 只会在这里暴露 —— 前面所有测试都是整帧一次
+    #    发出去的，环回快得根本不会卡在中间，所以永远碰不到。
+    #    这里让包头两段之间停 120ms（客户端轮询超时是 20ms），必然触发。
+    blob = struct.pack(">III", len(data), 3, 0x00000001) + data
+    conn.sendall(blob[:5])
+    time.sleep(0.12)                      # ← 关键：故意超过客户端的 20ms 轮询超时
+    conn.sendall(blob[5:12])
+    time.sleep(0.12)
+    third = (len(blob) - 12) // 3
+    for k in range(3):
+        a = 12 + k * third
+        b = len(blob) if k == 2 else 12 + (k + 1) * third
+        conn.sendall(blob[a:b])
+        time.sleep(0.08)
+    phone_state["slow_sent"] = True
+
+    # ③ 再连续推真 JPEG 多帧：客户端应当每一帧都收得到。
     #    挨过超大帧之后如果流错位了，这里就只能收到很少几帧。
     phone_state["jpeg_frames"] = 0
     for _ in range(6):
@@ -422,6 +441,10 @@ def main():
           f"len={vals.get('BIGFRAME_LEN')}")
 
     check("★ 客户端收到了视频帧", vals.get("FRAME_GOT") == "1")
+    check("★ ★ 拆开发的那一帧仍然完整收到（读到一半超时不能丢字节）",
+          vals.get("FRAME_GOT") == "1" and vals.get("NJDECODE") == "0",
+          f"帧长={vals.get('FRAME_LEN')} 解码={vals.get('NJDECODE')}")
+
     check("★ 收到的是 JPEG（FF D8 开头）",
           vals.get("FRAME_IS_JPEG") == "是", vals.get("FRAME_HEAD", ""))
     check("★ JPEG 解码成功", vals.get("NJDECODE") == "0", vals.get("NJDECODE"))

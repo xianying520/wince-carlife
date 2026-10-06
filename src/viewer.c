@@ -51,6 +51,9 @@ static const PRESET g_presets[] = {
 static int      g_preset = 2;               /* 默认 480x272@15 */
 static int      g_quit = 0;
 static int      g_captured = 0;
+/* 最后一次有效的画面坐标。见 WM_LBUTTONUP 里的说明：手指拖到画面外再
+ * 松开时，必须用这个坐标把"抬起"补发出去，否则手机以为手指一直按着。 */
+static int      g_last_px = 0, g_last_py = 0, g_have_last = 0;
 
 static unsigned char *g_rx = 0;
 static int      g_rxcap = 0;
@@ -346,6 +349,9 @@ static LRESULT CALLBACK WndProc(HWND h, UINT m, WPARAM w, LPARAM l)
         if (disp_map_touch(&g_disp, &area, x, y, &px, &py) == 0) {
             SetCapture(h);
             g_captured = 1;
+            g_last_px = px;
+            g_last_py = py;
+            g_have_last = 1;
             send_touch(0, px, py);            /* 0 = 按下 */
         }
         return 0;
@@ -360,8 +366,11 @@ static LRESULT CALLBACK WndProc(HWND h, UINT m, WPARAM w, LPARAM l)
         GetClientRect(h, &rc);
         area = rc;
         area.bottom -= STATUS_H;
-        if (disp_map_touch(&g_disp, &area, x, y, &px, &py) == 0)
+        if (disp_map_touch(&g_disp, &area, x, y, &px, &py) == 0) {
+            g_last_px = px;
+            g_last_py = py;
             send_touch(2, px, py);            /* 2 = 移动 */
+        }
         return 0;
     }
 
@@ -376,8 +385,20 @@ static LRESULT CALLBACK WndProc(HWND h, UINT m, WPARAM w, LPARAM l)
         GetClientRect(h, &rc);
         area = rc;
         area.bottom -= STATUS_H;
-        if (disp_map_touch(&g_disp, &area, x, y, &px, &py) == 0)
-            send_touch(1, px, py);            /* 1 = 抬起 */
+        /* ⚠ "抬起"必须无条件发出去。
+         *
+         *   原来这里和按下一样做了边界判断：手指拖到画面外再松开就【不发
+         *   抬起】—— 而在触摸屏上这太容易了（从底部往上滑、松手时落在状态
+         *   栏上）。手机那边会以为你的手指一直按着没放，之后所有操作都不对。
+         *   落点在外面时，就用最后一个有效坐标把抬起补上。 */
+        if (disp_map_touch(&g_disp, &area, x, y, &px, &py) == 0) {
+            g_last_px = px;
+            g_last_py = py;
+        } else if (!g_have_last) {
+            return 0;                        /* 从头到尾就没落到画面里，忽略 */
+        }
+        send_touch(1, g_last_px, g_last_py);  /* 1 = 抬起 */
+        g_have_last = 0;
         return 0;
     }
 
