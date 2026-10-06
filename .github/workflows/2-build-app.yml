@@ -28,8 +28,6 @@ jobs:
           ls "$HOME/tc"
           test -x "$HOME/tc/cegcc/bin/arm-mingw32ce-gcc"
 
-      # 先探测哪种链接方式能产出合法 WinCE PE，写进环境变量供后面用。
-      # 这样即使工具链换版本、旗标变了，构建也能自愈。
       # 一次性探测出「子系统旗标」和「库名」两件事，写进环境变量。
       # 这样换工具链版本、旗标或库名变了，构建都能自愈，不用再废一轮编译。
       - name: 探测可用的子系统旗标与库名
@@ -140,6 +138,7 @@ jobs:
       # ⭐ 最终程序：显示 + 触摸回传。这是本次交付的核心，必须编过。
       - name: 编译最终程序（显示 + 触摸回传）
         run: |
+          export PATH="$HOME/tc/cegcc/bin:$PATH"
           make viewer LDFLAGS="$WINCE_LDFLAGS -s" CORELIB="$WINCE_CORELIB" NETLIB="$WINCE_NETLIB"
 
       # 检查导入的 DLL：CeGCC 若把 GCC 运行库做成 DLL 依赖，
@@ -151,6 +150,7 @@ jobs:
           done
 
       - name: 上传产物
+        if: always()
         uses: actions/upload-artifact@v4
         with:
           name: wince-exe
