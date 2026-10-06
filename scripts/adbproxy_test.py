@@ -109,7 +109,11 @@ def adbd(ready, state):
         # ── CNXN ──
         m = read_msg(conn)
         state["cnxn"] = m is not None and m[0] == CNXN
-        send_msg(conn, CNXN, 0x01000000, 256 * 1024, b"device::ro.product.name=fake;")
+        # NOTE: must NOT reply CNXN here. A real adbd challenges with
+        # AUTH(TOKEN) first and only sends CNXN after the signature checks
+        # out. Replying CNXN immediately means "let it in without any
+        # signature", which skips the entire auth branch and makes the
+        # whole test meaningless.
 
         # ── AUTH：先发 20 字节挑战，再验签 ──
         # ⚠ 顺序不能反：被测代码是等手机先发 AUTH(TOKEN) 才会签名的，
