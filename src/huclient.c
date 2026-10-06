@@ -61,7 +61,9 @@ static void do_run(void)
     SOCKET vid = INVALID_SOCKET;
     int n, i, found = 0;
 
-    static unsigned char vbuf[65536];
+    /* 256KB：H.264 的 I 帧在 768x480 下可能到 100KB 左右，
+     * 64KB 会频繁触发「帧比缓冲区大」的丢数据路径。 */
+    static unsigned char vbuf[262144];
 
     g_len = 0;
     g_report[0] = 0;

@@ -286,10 +286,30 @@ int cl_recv_video(SOCKET s, unsigned long *timestamp, unsigned long *vtype,
     if (vtype)
         *vtype = get_be32(hdr + 8);
 
-    if (want > cap)
-        want = cap;
-    if (want < 0)
-        want = 0;
+    if (want < 0 || want > CL_MAX_FRAME)
+        return CL_ERR_RECV;          /* 长度不可信，流已损坏 */
+
+    if (want > cap) {
+        /* 帧比缓冲区大。光截断是不够的 —— 剩下的字节还留在 socket 里，
+         * 下一帧就会把帧中间的字节当成包头长度，从此整个流全乱。
+         * 必须把多余的收掉丢掉，换取流同步。（现场表现为「收几帧后全乱」，
+         * 很容易被误判成协议不对，所以这里必须处理干净。） */
+        int extra = want - cap;
+        unsigned char sink[512];
+
+        r = recv_all(s, buf, cap, timeout_ms);
+        if (r != CL_OK)
+            return r;
+        while (extra > 0) {
+            int chunk = extra < (int)sizeof(sink) ? extra : (int)sizeof(sink);
+            r = recv_all(s, sink, chunk, timeout_ms);
+            if (r != CL_OK)
+                return r;
+            extra -= chunk;
+        }
+        *len = cap;
+        return CL_OK;
+    }
 
     if (want > 0) {
         r = recv_all(s, buf, want, timeout_ms);

@@ -18,6 +18,23 @@ ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 SKIP_DIRS = {".git", "build", "__pycache__"}
 SKIP_FILES = {".gitignore"} if False else set()
 
+class _NoAuthRedirect(urllib.request.HTTPRedirectHandler):
+    """GitHub 下载产物/日志会 302 到签名 URL。
+    带着 Authorization 头跟过去会 401 —— curl -L 默认跨域就去掉，这里对齐同样行为。"""
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        new = super().redirect_request(req, fp, code, msg, headers, newurl)
+        if new is None:
+            return None
+        for k in list(new.headers):
+            if k.lower() == "authorization":
+                del new.headers[k]
+        new.unredirected_hdrs.pop("Authorization", None)
+        return new
+
+
+_OPENER = urllib.request.build_opener(_NoAuthRedirect)
+
+
 def call(method, path, token, body=None, raw=False):
     req = urllib.request.Request(API + path, method=method)
     req.add_header("Authorization", "Bearer " + token)
@@ -28,7 +45,7 @@ def call(method, path, token, body=None, raw=False):
         data = json.dumps(body).encode()
         req.add_header("Content-Type", "application/json")
     try:
-        with urllib.request.urlopen(req, data, timeout=60) as r:
+        with _OPENER.open(req, data, timeout=180) as r:
             payload = r.read()
             return r.status, (payload if raw else (json.loads(payload) if payload else {}))
     except urllib.error.HTTPError as e:
