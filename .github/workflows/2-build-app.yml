@@ -106,27 +106,20 @@ jobs:
           export PATH="$HOME/tc/cegcc/bin:$PATH"
           make client LDFLAGS="$WINCE_LDFLAGS -s" CORELIB="$WINCE_CORELIB" NETLIB="$WINCE_NETLIB"
 
+      # 直接调用统一脚本，不再在这里另写一份检查逻辑。
+      # 教训：之前这里内联了一份 assert Machine==0x01c2，改了 scripts/checkpe.py
+      # 却忘了同步改这里，导致三个程序明明编出来了却卡在校验。
       - name: 校验产物是 WinCE ARM PE
         run: |
-          python3 - <<'PY'
-          import struct, sys, glob
-          files = sorted(glob.glob('build/*.exe'))
-          if not files:
-              sys.exit('没有产物')
-          for f in files:
-              d = open(f, 'rb').read()
-              pe = struct.unpack_from('<I', d, 0x3c)[0]
-              assert d[pe:pe+4] == b'PE\0\0', f'{f} 不是 PE 文件'
-              mach, nsec = struct.unpack_from('<HH', d, pe+4)
-              magic  = struct.unpack_from('<H', d, pe+24)[0]
-              subsys = struct.unpack_from('<H', d, pe+24+68)[0]
-              print(f'{f}: {len(d)} 字节  Machine=0x{mach:04x}  Magic=0x{magic:x}  '
-                    f'节={nsec}  Subsystem={subsys}')
-              assert mach   == 0x01c2, f'{f}: Machine 应为 0x01c2(ARM)，实际 0x{mach:04x}'
-              assert magic  == 0x10b,  f'{f}: 应为 PE32(0x10b)，实际 0x{magic:x}'
-              assert subsys == 9,      f'{f}: Subsystem 应为 9(WINDOWS_CE_GUI)，实际 {subsys}'
-          print(f'✅ {len(files)} 个产物全部通过 WinCE 6.0 ARM GUI 校验')
-          PY
+          fail=0
+          for f in build/*.exe; do
+            python3 scripts/checkpe.py "$f" || fail=1
+          done
+          if [ $fail -ne 0 ]; then
+            echo "❌ 有产物不是合法的 WinCE ARM GUI 程序"
+            exit 1
+          fi
+          echo "✅ 全部产物通过 WinCE 6.0 ARM GUI 校验"
 
       # 检查导入的 DLL：CeGCC 若把 GCC 运行库做成 DLL 依赖，
       # 车机上没有就会「一点就闪退」，必须出发前发现。
