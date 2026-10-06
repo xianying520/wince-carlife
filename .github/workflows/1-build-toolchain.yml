@@ -1,0 +1,96 @@
+# ─────────────────────────────────────────────────────────────────────────────
+# 只跑一次：从头编译 CeGCC(arm-mingw32ce) 交叉工具链，发布成 Release 资产。
+# CeGCC 没有官方预编译包，所以我们必须自己编一个。
+# 编完之后的每次应用构建都直接下载它（约 1 分钟）。
+# ─────────────────────────────────────────────────────────────────────────────
+name: 1. Build CeGCC toolchain (ARM, run once)
+
+on:
+  workflow_dispatch:
+  push:
+    paths:
+      - '.github/workflows/1-build-toolchain.yml'
+
+permissions:
+  contents: write
+
+jobs:
+  toolchain:
+    runs-on: ubuntu-22.04
+    timeout-minutes: 350
+    env:
+      SRC: ${{ github.workspace }}/../cegcc-src
+      PREFIX: ${{ github.workspace }}/../cegcc-install/cegcc
+      TARBALL: ${{ github.workspace }}/../cegcc-arm-mingw32ce.tar.gz
+
+    steps:
+      - name: 安装宿主构建依赖
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            build-essential bison flex texinfo \
+            libgmp-dev libmpfr-dev libmpc-dev libisl-dev zlib1g-dev \
+            ca-certificates git curl
+
+      - name: 显示宿主环境
+        run: |
+          gcc --version | head -1
+          make --version | head -1
+          nproc
+
+      # ── 首选：enlyze 分支（GCC 9.3.0，在较新的宿主上更容易编过）──────────
+      - name: 克隆 enlyze/cegcc-build（含子模块）
+        run: |
+          git clone --recursive https://github.com/enlyze/cegcc-build.git "$SRC"
+          cd "$SRC"
+          git submodule update --init --recursive
+          echo "── 子模块状态 ──"
+          git submodule status
+
+      - name: 编译 arm-mingw32ce 工具链（enlyze）
+        id: build_enlyze
+        continue-on-error: true
+        run: |
+          mkdir -p "$(dirname "$PREFIX")"
+          cd "$SRC"
+          ./build_cf.sh "$PREFIX" arm-mingw32ce
+
+      # ── 回退：MaxKellermann 原版（ARM 默认目标）──────────────────────────
+      - name: 回退到 MaxKellermann/cegcc-build
+        if: steps.build_enlyze.outcome == 'failure'
+        run: |
+          echo "::warning::enlyze 构建失败，回退 MaxKellermann 原版"
+          rm -rf "$SRC" "$PREFIX"
+          git clone --recursive https://github.com/MaxKellermann/cegcc-build.git "$SRC"
+          cd "$SRC"
+          git submodule update --init --recursive
+          mkdir -p "$(dirname "$PREFIX")"
+          OUT="$SRC/../cegcc-out"
+          rm -rf "$OUT"; mkdir -p "$OUT"; cd "$OUT"
+          "$SRC/build.sh" --prefix="$PREFIX" --target=arm-mingw32ce
+
+      - name: 自检工具链
+        run: |
+          test -x "$PREFIX/bin/arm-mingw32ce-gcc" || { echo "编译器不存在"; ls -R "$PREFIX" | head -50; exit 1; }
+          export PATH="$PREFIX/bin:$PATH"
+          arm-mingw32ce-gcc --version | head -1
+          echo "── 编译一个最小程序验证 ──"
+          printf '#include <windows.h>\nint WINAPI WinMain(HINSTANCE a,HINSTANCE b,LPWSTR c,int d){return 0;}\n' > /tmp/t.c
+          arm-mingw32ce-gcc -mwindows -o /tmp/t.exe /tmp/t.c
+          ls -l /tmp/t.exe
+          file /tmp/t.exe || true
+
+      - name: 打包
+        run: |
+          cd "$(dirname "$PREFIX")"
+          tar czf "$TARBALL" "$(basename "$PREFIX")"
+          ls -lh "$TARBALL"
+
+      - name: 发布 Release 资产
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh release view cegcc-arm >/dev/null 2>&1 \
+            || gh release create cegcc-arm --title "CeGCC ARM toolchain" \
+                 --notes "CeGCC arm-mingw32ce 交叉工具链（CI 自编）。应用构建直接下载此资产。"
+          gh release upload cegcc-arm "$TARBALL" --clobber

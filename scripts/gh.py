@@ -1,0 +1,180 @@
+#!/usr/bin/env python3
+# -*- coding: utf-8 -*-
+"""
+只用 api.github.com 完成全部 GitHub 操作（因为 github.com 网页被墙、API 却通）。
+
+用法:
+    python3 scripts/gh.py push   <token> [仓库名]   # 建仓库 + 上传全部文件
+    python3 scripts/gh.py run    <token> [仓库名]   # 触发工具链 workflow
+    python3 scripts/gh.py status <token> [仓库名]   # 看 workflow 运行状态
+    python3 scripts/gh.py fetch  <token> [仓库名]   # 下载构建产物 exe
+
+令牌权限只需要 repo（或细粒度 Contents: Read and write + Actions: Read and write）。
+"""
+import base64, json, os, sys, time, urllib.error, urllib.request
+
+API = "https://api.github.com"
+ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+SKIP_DIRS = {".git", "build", "__pycache__"}
+SKIP_FILES = {".gitignore"} if False else set()
+
+def call(method, path, token, body=None, raw=False):
+    req = urllib.request.Request(API + path, method=method)
+    req.add_header("Authorization", "Bearer " + token)
+    req.add_header("Accept", "application/vnd.github+json")
+    req.add_header("User-Agent", "wince-carlife-agent")
+    data = None
+    if body is not None:
+        data = json.dumps(body).encode()
+        req.add_header("Content-Type", "application/json")
+    try:
+        with urllib.request.urlopen(req, data, timeout=60) as r:
+            payload = r.read()
+            return r.status, (payload if raw else (json.loads(payload) if payload else {}))
+    except urllib.error.HTTPError as e:
+        detail = e.read().decode("utf-8", "replace")[:400]
+        return e.code, {"__error__": detail}
+
+def collect_files():
+    out = []
+    for dp, dns, fns in os.walk(ROOT):
+        dns[:] = [d for d in dns if d not in SKIP_DIRS]
+        for fn in fns:
+            if fn in SKIP_FILES:
+                continue
+            full = os.path.join(dp, fn)
+            rel = os.path.relpath(full, ROOT).replace(os.sep, "/")
+            out.append((rel, full))
+    return sorted(out)
+
+def push(token, repo):
+    st, me = call("GET", "/user", token)
+    if st != 200:
+        sys.exit(f"❌ 令牌无效或无权访问: {st} {me}")
+    owner = me["login"]
+    print(f"账号: {owner}")
+
+    st, r = call("GET", f"/repos/{owner}/{repo}", token)
+    if st == 404:
+        st, r = call("POST", "/user/repos", token,
+                     {"name": repo, "private": True,
+                      "description": "WinCE CarLife HU client"})
+        if st not in (200, 201):
+            sys.exit(f"❌ 建仓库失败: {st} {r}")
+        print(f"✅ 已创建仓库 {owner}/{repo}（私有）")
+        base_sha = None
+    else:
+        print(f"✅ 仓库已存在 {owner}/{repo}")
+        st2, br = call("GET", f"/repos/{owner}/{repo}/git/ref/heads/{r.get('default_branch','main')}", token)
+        base_sha = br.get("object", {}).get("sha") if st2 == 200 else None
+        if base_sha:
+            print(f"   已有提交 {base_sha[:8]}，将作为父提交")
+
+    # ── 空仓库特殊处理 ──
+    # GitHub 的 Git Data API 在"零提交"的仓库上建 blob 会返回 409
+    # ("Git Repository is empty")。必须先用 Contents API 落一个文件点火。
+    if not base_sha:
+        branch = r.get("default_branch") or "main"
+        st0, br0 = call("GET", f"/repos/{owner}/{repo}/git/ref/heads/{branch}", token)
+        if st0 != 200:
+            print("   仓库还没有任何提交 —— 用 Contents API 点火 …")
+            st1, b1 = call("PUT", f"/repos/{owner}/{repo}/contents/README.md", token,
+                           {"message": "init: bootstrap repository",
+                            "content": base64.b64encode(
+                                "# wince-carlife\n\nWinCE 车机端 CarLife 客户端（开发中）\n".encode()
+                            ).decode()})
+            if st1 not in (200, 201):
+                sys.exit(f"❌ 点火失败: {st1} {b1}")
+            print("   ✅ 已点火（产生第一个提交）")
+            st0, br0 = call("GET", f"/repos/{owner}/{repo}/git/ref/heads/{branch}", token)
+            if st0 != 200:
+                sys.exit(f"❌ 取分支失败: {st0} {br0}")
+        base_sha = br0["object"]["sha"]
+        print(f"   基准提交 {base_sha[:8]}")
+
+    files = collect_files()
+    print(f"待上传 {len(files)} 个文件 …")
+    tree = []
+    for rel, full in files:
+        with open(full, "rb") as f:
+            content = base64.b64encode(f.read()).decode()
+        st, b = call("POST", f"/repos/{owner}/{repo}/git/blobs", token,
+                     {"content": content, "encoding": "base64"})
+        if st not in (200, 201):
+            sys.exit(f"❌ 上传 {rel} 失败: {st} {b}")
+        tree.append({"path": rel, "mode": "100644", "type": "blob", "sha": b["sha"]})
+    print(f"   {len(tree)} 个 blob 上传完成")
+
+    body = {"tree": tree}
+    if base_sha:
+        body["base_tree"] = base_sha
+    st, t = call("POST", f"/repos/{owner}/{repo}/git/trees", token, body)
+    if st not in (200, 201):
+        sys.exit(f"❌ 建 tree 失败: {st} {t}")
+
+    cbody = {"message": "wince-carlife: 初始化（工具链 workflow + M1 骨架 + 协议文档）", "tree": t["sha"]}
+    if base_sha:
+        cbody["parents"] = [base_sha]
+    st, c = call("POST", f"/repos/{owner}/{repo}/git/commits", token, cbody)
+    if st not in (200, 201):
+        sys.exit(f"❌ 建 commit 失败: {st} {c}")
+
+    if base_sha:
+        br_name = r.get("default_branch") or "main"
+        st, _ = call("PATCH", f"/repos/{owner}/{repo}/git/refs/heads/{br_name}",
+                     token, {"sha": c["sha"]})
+    else:
+        st, _ = call("POST", f"/repos/{owner}/{repo}/git/refs", token,
+                     {"ref": "refs/heads/main", "sha": c["sha"]})
+    if st not in (200, 201):
+        sys.exit(f"❌ 建分支失败: {st}")
+    print(f"✅ 完成！仓库地址 https://github.com/{owner}/{repo}")
+    print(f"   下一步: python3 scripts/gh.py run {token[:6]}… {repo}")
+
+def run(token, repo):
+    owner = call("GET", "/user", token)[1]["login"]
+    wf = "1-build-toolchain.yml"
+    st, r = call("POST", f"/repos/{owner}/{repo}/actions/workflows/{wf}/dispatches",
+                 token, {"ref": "main"})
+    if st not in (200, 201, 204):
+        sys.exit(f"❌ 触发失败: {st} {r}")
+    print("✅ 已触发『1. Build CeGCC toolchain』")
+    print("   ⏱ 这一步要编 GCC，30–60 分钟。稍后用 status 子命令查看。")
+
+def status(token, repo):
+    owner = call("GET", "/user", token)[1]["login"]
+    st, r = call("GET", f"/repos/{owner}/{repo}/actions/runs?per_page=5", token)
+    if st != 200:
+        sys.exit(f"❌ {st} {r}")
+    if not r.get("workflow_runs"):
+        print("还没有运行记录"); return
+    for w in r["workflow_runs"]:
+        print(f"  [{w['status']:>12}] {w['name']}  ({w['created_at'][:16]})")
+        print(f"      {w['html_url']}")
+        if w["status"] == "completed" and w["conclusion"] != "success":
+            print(f"      ❌ 结论: {w['conclusion']}")
+
+def fetch(token, repo):
+    owner = call("GET", "/user", token)[1]["login"]
+    st, r = call("GET", f"/repos/{owner}/{repo}/actions/artifacts?per_page=20", token)
+    if st != 200:
+        sys.exit(f"❌ {st} {r}")
+    arts = [a for a in r.get("artifacts", []) if not a["expired"]]
+    if not arts:
+        print("还没有产物（工具链 workflow 可能还没跑完）"); return
+    a = arts[0]
+    st, blob = call("GET", f"/repos/{owner}/{repo}/actions/artifacts/{a['id']}/zip", token, raw=True)
+    if st != 200:
+        sys.exit(f"❌ 下载失败: {st}")
+    out = os.path.join(ROOT, "build", "artifact.zip")
+    os.makedirs(os.path.dirname(out), exist_ok=True)
+    with open(out, "wb") as f:
+        f.write(blob)
+    print(f"✅ 已下载产物 {a['name']} → {out}（{len(blob)} 字节）")
+
+if __name__ == "__main__":
+    if len(sys.argv) < 3:
+        sys.exit(__doc__)
+    cmd, token = sys.argv[1], sys.argv[2]
+    repo = sys.argv[3] if len(sys.argv) > 3 else "wince-carlife"
+    {"push": push, "run": run, "status": status, "fetch": fetch}.get(cmd, lambda *a: sys.exit(f"未知命令 {cmd}"))(token, repo)
