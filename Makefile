@@ -50,10 +50,13 @@ probe: $(PROBE_EXE)
 $(BUILD)/main.o: src/main.c | $(BUILD)
 	$(CC) $(CFLAGS) -c $< -o $@
 
-$(BUILD)/netprobe.o: src/netprobe.c src/carlife.h | $(BUILD)
+$(BUILD)/netprobe.o: src/netprobe.c src/carlife.h src/hwdump.h | $(BUILD)
 	$(CC) $(CFLAGS) -c $< -o $@
 
 $(BUILD)/huclient.o: src/huclient.c src/carlife.h | $(BUILD)
+	$(CC) $(CFLAGS) -c $< -o $@
+
+$(BUILD)/hwdump.o: src/hwdump.c src/hwdump.h | $(BUILD)
 	$(CC) $(CFLAGS) -c $< -o $@
 
 $(BUILD)/carlife.o: src/carlife.c src/carlife.h | $(BUILD)
@@ -62,7 +65,7 @@ $(BUILD)/carlife.o: src/carlife.c src/carlife.h | $(BUILD)
 $(MAIN_EXE): $(BUILD)/main.o
 	$(CC) $(LDFLAGS) -o $@ $^ $(CORELIB)
 
-$(PROBE_EXE): $(BUILD)/netprobe.o $(BUILD)/carlife.o
+$(PROBE_EXE): $(BUILD)/netprobe.o $(BUILD)/carlife.o $(BUILD)/hwdump.o
 	$(CC) $(LDFLAGS) -o $@ $^ $(CORELIB) $(NETLIB)
 
 # 主客户端：握手 + 视频初始化 + 收帧（也链 ws2）

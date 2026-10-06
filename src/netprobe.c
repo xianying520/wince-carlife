@@ -18,9 +18,10 @@
 #include <windows.h>
 #include <string.h>
 #include "carlife.h"
+#include "hwdump.h"
 #include "uicommon.h"
 
-#define REPORT_CAP 8192
+#define REPORT_CAP 24576
 #define MAX_IP     8
 
 static WCHAR g_report[REPORT_CAP];
@@ -40,6 +41,31 @@ static void app(const WCHAR *s)
     g_report[g_len++] = L'\r';
     g_report[g_len++] = L'\n';
     g_report[g_len]   = 0;
+}
+
+/* ── 把一整块多行文本按行拆开追加进报告 ── */
+static void app_block(const WCHAR *block)
+{
+    WCHAR line[256];
+    int i = 0, n = 0;
+
+    while (block[i]) {
+        if (block[i] == L'\r' || block[i] == L'\n') {
+            line[n] = 0;
+            if (n > 0)
+                app(line);
+            n = 0;
+            i++;
+            continue;
+        }
+        if (n < 250)
+            line[n++] = block[i];
+        i++;
+    }
+    if (n > 0) {
+        line[n] = 0;
+        app(line);
+    }
 }
 
 /* ── IP(网络字节序 ulong) → 点分字符串 ── */
@@ -241,6 +267,14 @@ static void do_probe(void)
         }
     }
 
+    /* ── 车机硬件/网络能力清点 ──
+     * 放最后是有意的：网络探测结果更重要，先让用户看到。
+     * 这一节回答的是一个更根本的问题 —— 车机到底有没有 USB 网卡驱动。
+     * 完整内容同时写进 hw-info.txt。 */
+    app(L"");
+    hw_dump();
+    app_block(hw_dump_text());
+
     app(L"");
     if (hit) {
         app(L"*** 有端口响应 => M2a 可行，可开始协议层 ***");
@@ -316,6 +350,8 @@ int WINAPI WinMain(HINSTANCE hi, HINSTANCE hp, LPWSTR cmd, int show)
     do_probe();                        /* 窗口已显示，探测期间可看到空窗 */
     g_total = uic_count_lines(g_report);
     uic_dump_file(L"netprobe-result.txt", g_report);   /* 结果写文件，便于拷出来发给开发方 */
+    hw_dump();
+    uic_dump_file(L"hw-info.txt", hw_dump_text());     /* 硬件清点单独一份，方便直接发我 */
     InvalidateRect(g_hwnd, 0, TRUE);   /* 结果画上去 */
 
     while (GetMessageW(&msg, 0, 0, 0)) {
