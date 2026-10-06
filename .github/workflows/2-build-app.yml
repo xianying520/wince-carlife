@@ -111,6 +111,17 @@ jobs:
           ls -l /tmp/rsa_arm.o
           echo "✅ rsa 模块能为 ARM/WinCE 编译（无平台耦合）"
 
+      - name: 验证 ADB 协议（真实代码 + 假 adbd，含 RSA 认证验签）
+        run: |
+          python3 scripts/adb_test.py
+
+      - name: 验证 ADB 模块能为 ARM/WinCE 编译
+        run: |
+          export PATH="$HOME/tc/cegcc/bin:$PATH"
+          arm-mingw32ce-gcc -Os -Wall -c src/adb.c -o /tmp/adb_arm.o
+          ls -l /tmp/adb_arm.o
+          echo "✅ adb 模块能为 ARM/WinCE 编译（无平台耦合）"
+
       - name: 验证 JPEG 解码器（主机运行 + 断言像素值）
         run: |
           python3 scripts/make_test_jpeg.py /tmp/test_gray.jpg
