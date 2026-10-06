@@ -18,6 +18,10 @@
 
 /* ── 包头长度：CMD/CTRL 是 8 字节，其余通道是 12 字节 ── */
 #define CL_HDR_CMD    8
+
+/* 单帧上限。超过它说明长度字段被误读、流已损坏 ——
+ * 直接判错，而不是傻乎乎地去收几百 MB 数据。 */
+#define CL_MAX_FRAME (4 * 1024 * 1024)
 #define CL_HDR_MEDIA  12
 
 /* ── 消息 ID ──
