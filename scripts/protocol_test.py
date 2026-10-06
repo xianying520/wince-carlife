@@ -136,7 +136,7 @@ def cmd_server(ready):
     srv.close()
 
 
-def video_server(ready):
+def video_server(ready):  # noqa: D401
     srv = socket.socket()
     srv.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
     srv.bind((HOST, PORT_VIDEO))
@@ -267,6 +267,8 @@ def main():
     print(proc.stdout, end="")
     if proc.stderr.strip():
         print(proc.stderr, end="")
+    print(f"  [诊断] 被测程序退出码 = {proc.returncode}"
+          + ("（负值 = 崩溃/收到信号）" if proc.returncode < 0 else ""))
     if proc.returncode != 0:
         fails.append("被测程序自身返回非零")
 
