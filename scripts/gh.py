@@ -131,15 +131,38 @@ def push(token, repo):
     print(f"✅ 完成！仓库地址 https://github.com/{owner}/{repo}")
     print(f"   下一步: python3 scripts/gh.py run {token[:6]}… {repo}")
 
-def run(token, repo):
+def run(token, repo, want=None):
+    """触发一个 workflow。want 可以是名称片段（如 "2" 或 "app"）；
+    不给就触发列表里第一个（⚠ 第一个是工具链，很容易点错，建议显式给）。"""
     owner = call("GET", "/user", token)[1]["login"]
-    wf = "1-build-toolchain.yml"
-    st, r = call("POST", f"/repos/{owner}/{repo}/actions/workflows/{wf}/dispatches",
+    st, r = call("GET", f"/repos/{owner}/{repo}/actions/workflows", token)
+    if st != 200:
+        sys.exit(f"❌ 取工作流列表失败 {st} {r}")
+    wfs = r.get("workflows", [])
+    if not wfs:
+        sys.exit("❌ 仓库里没有 workflow")
+    pick = None
+    if want:
+        for w in wfs:
+            if want.lower() in w["name"].lower() or want == str(w["id"]):
+                pick = w
+                break
+        if not pick:
+            print("可选的工作流:")
+            for w in wfs:
+                print(f"   {w['id']}  {w['name']}  ({w['path']})")
+            sys.exit(f"❌ 没找到匹配 [{want}] 的工作流")
+    else:
+        pick = wfs[0]
+    st, _ = call("POST", f"/repos/{owner}/{repo}/actions/workflows/{pick['id']}/dispatches",
                  token, {"ref": "main"})
-    if st not in (200, 201, 204):
-        sys.exit(f"❌ 触发失败: {st} {r}")
-    print("✅ 已触发『1. Build CeGCC toolchain』")
-    print("   ⏱ 这一步要编 GCC，30–60 分钟。稍后用 status 子命令查看。")
+    if st not in (201, 204):
+        sys.exit(f"❌ 触发失败 {st}")
+    print(f"✅ 已触发『{pick['name']}』({pick['path']})")
+    if "工具链" in pick["name"] or pick["name"].startswith("1."):
+        print("   ⏱ 这是工具链构建，要 15-20 分钟。程序编译请用: run <token> <repo> 2")
+
+
 
 def status(token, repo):
     owner = call("GET", "/user", token)[1]["login"]

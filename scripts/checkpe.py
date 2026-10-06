@@ -22,7 +22,12 @@ def main():
     mach, nsec = struct.unpack_from("<HH", d, pe + 4)
     magic  = struct.unpack_from("<H", d, pe + 24)[0]
     subsys = struct.unpack_from("<H", d, pe + 24 + 68)[0]
-    ok = (mach == 0x01C2 and magic == 0x10B and subsys == 9)
+    # Machine 两种都合法，别只认一个：
+    #   0x01c0 = IMAGE_FILE_MACHINE_ARM   ← CeGCC(arm-mingw32ce) 实测产出这个
+    #   0x01c2 = IMAGE_FILE_MACHINE_THUMB ← 手写的 M0 探针用的这个，真机验证过
+    # 之前只认 0x01c2，导致 CI 把所有 CeGCC 产物都判为不合格。
+    OK_MACH = (0x01C0, 0x01C2)
+    ok = (mach in OK_MACH and magic == 0x10B and subsys == 9)
     if not quiet:
         print(f"  {'✅' if ok else '❌'} {len(d):>7} 字节  Machine=0x{mach:04x}  "
               f"Magic=0x{magic:x}  节={nsec}  Subsystem={subsys}")
