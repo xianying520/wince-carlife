@@ -22,7 +22,9 @@
 #include "carlife.h"
 #include "uicommon.h"
 
-#define REPORT_CAP 8192
+#define REPORT_CAP 16384
+/* 视频取证的封顶大小 */
+#define DUMP_CAP (2 * 1024 * 1024)
 #define MAX_FRAMES 40
 #define FRAME_TIME 10000UL
 #define SHOW_FRAMES 8
@@ -194,6 +196,14 @@ static void do_run(void)
     } else {
         int frames = 0, total = 0, r;
         unsigned long t0 = GetTickCount();
+        /* ── 把原始视频数据落盘 ──
+         * 目的：拷回来就能在本机离线分析真实编码/帧结构，
+         * 不必为了「到底是什么格式」再跑一趟车机。 */
+        HANDLE dump = CreateFileW(L"video-dump.bin", GENERIC_WRITE, 0, NULL,
+                                  CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, NULL);
+        int dtotal = 0;
+        if (dump == INVALID_HANDLE_VALUE)
+            app(L"[!] 无法创建 video-dump.bin（只影响取证，不影响收帧）");
 
         while (frames < MAX_FRAMES) {
             unsigned long ts = 0, vt = 0;
@@ -221,10 +231,28 @@ static void do_run(void)
                 wsprintfW(tmp, L"   格式判断: %s", cl_guess_codec(vbuf, len));
                 app(tmp);
             }
+            /* 落盘（封顶 2MB，避免车机存储被写爆） */
+            if (dump != INVALID_HANDLE_VALUE && dtotal < DUMP_CAP) {
+                int wlen = len;
+                DWORD bw = 0;
+                if (dtotal + wlen > DUMP_CAP)
+                    wlen = DUMP_CAP - dtotal;
+                if (wlen > 0) {
+                    WriteFile(dump, vbuf, (DWORD)wlen, &bw, NULL);
+                    dtotal += wlen;
+                }
+            }
             if (frames <= SHOW_FRAMES) {
-                wsprintfW(tmp, L"   帧%d: %d 字节 type=0x%x", frames, len, vt);
+                wsprintfW(tmp, L"   帧%d: %d 字节 type=0x%x 偏移=%d",
+                          frames, len, vt, dtotal - len);
                 app(tmp);
             }
+        }
+        if (dump != INVALID_HANDLE_VALUE) {
+            FlushFileBuffers(dump);
+            CloseHandle(dump);
+            wsprintfW(tmp, L"[OK] 已存 video-dump.bin：%d 字节", dtotal);
+            app(tmp);
         }
         wsprintfW(tmp, L"[OK] 共 %d 帧，合计 %d 字节", frames, total);
         app(tmp);
