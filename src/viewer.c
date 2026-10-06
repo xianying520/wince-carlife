@@ -17,6 +17,7 @@
 
 #define STATUS_H   22          /* 底部状态栏高度 */
 #define EXIT_W     58          /* 状态栏右侧「退出」按钮宽度 */
+#define RES_W      96          /* 状态栏「分辨率」切换按钮宽度 */
 #define TOG_W      56          /* 状态栏「触摸包头」切换按钮宽度 */
 #define RX_CAP     (512 * 1024)
 
@@ -26,6 +27,22 @@ static SOCKET   g_cmd = INVALID_SOCKET;
 static SOCKET   g_vid = INVALID_SOCKET;
 static SOCKET   g_touch = INVALID_SOCKET;
 static int      g_touch_hdr = CL_HDR_CMD;   /* 触摸包头长：8 或 12，未实证，先 8 */
+
+/* ── 请求的画面参数预设 ──
+ * 为什么要有这个：老 ARM 上软解 JPEG 的能力大致按「每秒像素数」衡量。
+ * 768x480@30 = 11.0M 像素/秒，基本不可能；480x272@15 = 2.0M 才现实。
+ * 但车机实际能力未知，所以做成按钮现场逐个试，不用重新编译。
+ * 默认选 480x272@15（"先能看"），确认流畅后再往上调。 */
+typedef struct { int w, h, fps; const WCHAR *name; } PRESET;
+static const PRESET g_presets[] = {
+    { 320, 240, 10, L"320x240@10" },
+    { 400, 240, 12, L"400x240@12" },
+    { 480, 272, 15, L"480x272@15" },
+    { 640, 360, 20, L"640x360@20" },
+    { 768, 480, 30, L"768x480@30" },
+};
+#define N_PRESETS ((int)(sizeof(g_presets) / sizeof(g_presets[0])))
+static int      g_preset = 2;               /* 默认 480x272@15 */
 static int      g_quit = 0;
 static int      g_captured = 0;
 
@@ -97,6 +114,58 @@ static void send_touch(int action, int x, int y)
     cl_send_touch_action(g_touch, action, x, y, g_touch_hdr);
 }
 
+/* 按当前预设重新初始化视频编码器。
+ * 序列 RESET → INIT → START → JPEG 是推断：RESET 的消息存在（0x0001800B）
+ * 但未见参考代码演示中途改参数的完整时序，所以这里算尽力而为，
+ * 失败了也不致命 —— 用户重启程序即按新预设重新走一遍。 */
+static void apply_preset(void)
+{
+    if (g_cmd == INVALID_SOCKET)
+        return;
+    cl_send_cmd(g_cmd, CL_MSG_VIDEO_ENCODER_RESET, 0, 0);
+    cl_send_video_encoder_init(g_cmd, g_presets[g_preset].w,
+                               g_presets[g_preset].h, g_presets[g_preset].fps);
+    cl_send_video_encoder_start(g_cmd);
+    cl_send_video_encoder_jpeg(g_cmd);
+}
+
+/* 预设记住到文件，重启程序也能沿用上次的选择 */
+static void save_preset(void)
+{
+    HANDLE h = CreateFileW(L"viewer-res.txt", GENERIC_WRITE, 0, NULL,
+                           CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, NULL);
+    DWORD bw = 0;
+    char txt[16];
+    int n = 0, v = g_preset;
+    if (h == INVALID_HANDLE_VALUE)
+        return;
+    if (v == 0) txt[n++] = '0';
+    while (v > 0) { txt[n++] = (char)('0' + v % 10); v /= 10; }
+    /* 倒序 */
+    { int i; for (i = 0; i < n / 2; i++) { char t = txt[i]; txt[i] = txt[n-1-i]; txt[n-1-i] = t; } }
+    txt[n++] = '\n';
+    WriteFile(h, txt, (DWORD)n, &bw, NULL);
+    CloseHandle(h);
+}
+
+static void load_preset(void)
+{
+    HANDLE h = CreateFileW(L"viewer-res.txt", GENERIC_READ, 0, NULL,
+                           OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, NULL);
+    char b[8];
+    DWORD br = 0;
+    if (h == INVALID_HANDLE_VALUE)
+        return;
+    if (ReadFile(h, b, sizeof(b), &br, NULL) && br > 0) {
+        int v = 0, i;
+        for (i = 0; i < (int)br && b[i] >= '0' && b[i] <= '9'; i++)
+            v = v * 10 + (b[i] - '0');
+        if (v >= 0 && v < N_PRESETS)
+            g_preset = v;
+    }
+    CloseHandle(h);
+}
+
 /* ── 窗口过程 ── */
 static LRESULT CALLBACK WndProc(HWND h, UINT m, WPARAM w, LPARAM l)
 {
@@ -151,6 +220,20 @@ static LRESULT CALLBACK WndProc(HWND h, UINT m, WPARAM w, LPARAM l)
                 DrawTextW(dc, lbl, -1, &tg, DT_CENTER | DT_VCENTER | DT_SINGLELINE);
             }
 
+            /* 分辨率预设按钮 */
+            {
+                RECT rb = rc;
+                HBRUSH bb = CreateSolidBrush(RGB(40, 60, 110));
+                rb.top = rc.bottom - STATUS_H;
+                rb.right = rc.right - EXIT_W - TOG_W;
+                rb.left = rb.right - RES_W;
+                FillRect(dc, &rb, bb);
+                DeleteObject(bb);
+                SetTextColor(dc, RGB(255, 255, 255));
+                DrawTextW(dc, g_presets[g_preset].name, -1, &rb,
+                          DT_CENTER | DT_VCENTER | DT_SINGLELINE);
+            }
+
             /* 退出按钮 */
             {
                 RECT ex = rc;
@@ -178,6 +261,20 @@ static LRESULT CALLBACK WndProc(HWND h, UINT m, WPARAM w, LPARAM l)
         if (x >= rc.right - EXIT_W && y >= rc.bottom - STATUS_H) {
             g_quit = 1;
             DestroyWindow(h);
+            return 0;
+        }
+        /* 分辨率预设切换 */
+        if (x >= rc.right - EXIT_W - TOG_W - RES_W && x < rc.right - EXIT_W - TOG_W
+            && y >= rc.bottom - STATUS_H) {
+            g_preset = (g_preset + 1) % N_PRESETS;
+            save_preset();
+            apply_preset();
+            {
+                WCHAR t[200];
+                wsprintfW(t, L"已切换到 %s", g_presets[g_preset].name);
+                set_status(t);
+            }
+            InvalidateRect(h, 0, FALSE);
             return 0;
         }
         /* 触摸包头长度切换 */
@@ -309,7 +406,10 @@ static void run_session(void)
     /* 这三个都走 CMD 通道（已由参考源码证实：
      * 它们是 CCmdChannelModule 的成员方法，不是视频通道模块的），
      * 所以只需要传控制 socket。 */
-    if (cl_send_video_encoder_init(cmd, CL_VIDEO_W, CL_VIDEO_H, CL_VIDEO_FPS) != CL_OK) {
+    load_preset();
+    if (cl_send_video_encoder_init(cmd, g_presets[g_preset].w,
+                                   g_presets[g_preset].h,
+                                   g_presets[g_preset].fps) != CL_OK) {
         set_status(L"VIDEO_ENCODER_INIT 发送失败");
         return;
     }
@@ -319,12 +419,16 @@ static void run_session(void)
     }
     /* 明确要求 JPEG —— 我们只有 JPEG 解码器 */
     cl_send_video_encoder_jpeg(cmd);
+    {
+        WCHAR t[200];
+        wsprintfW(t, L"已请求 %s，等画面中 ...", g_presets[g_preset].name);
+        set_status(t);
+    }
 
     g_touch = cl_connect(ip, CL_PORT_TOUCH, 1500);
     if (g_touch != INVALID_SOCKET)
         cl_resend_version(cmd);       /* 触摸通道使用前也要求重发 */
 
-    set_status(L"等画面中 ...");
     t0 = GetTickCount();
     g_t0 = t0;
 
