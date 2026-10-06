@@ -128,6 +128,14 @@ jobs:
           print(f'✅ {len(files)} 个产物全部通过 WinCE 6.0 ARM GUI 校验')
           PY
 
+      # 检查导入的 DLL：CeGCC 若把 GCC 运行库做成 DLL 依赖，
+      # 车机上没有就会「一点就闪退」，必须出发前发现。
+      - name: 检查导入的 DLL（防车机闪退）
+        run: |
+          for f in build/*.exe; do
+            python3 scripts/checkimports.py "$f" || true
+          done
+
       - name: 上传产物
         uses: actions/upload-artifact@v4
         with:
