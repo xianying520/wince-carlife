@@ -155,26 +155,70 @@ def status(token, repo):
             print(f"      ❌ 结论: {w['conclusion']}")
 
 def fetch(token, repo):
+    """下载最新的 wince-exe 产物并解压到 build/"""
+    import zipfile
     owner = call("GET", "/user", token)[1]["login"]
-    st, r = call("GET", f"/repos/{owner}/{repo}/actions/artifacts?per_page=20", token)
+    st, r = call("GET", f"/repos/{owner}/{repo}/actions/artifacts?per_page=50", token)
     if st != 200:
         sys.exit(f"❌ {st} {r}")
     arts = [a for a in r.get("artifacts", []) if not a["expired"]]
+    named = [a for a in arts if a["name"] == "wince-exe"]
+    if named:
+        arts = named
     if not arts:
-        print("还没有产物（工具链 workflow 可能还没跑完）"); return
-    a = arts[0]
-    st, blob = call("GET", f"/repos/{owner}/{repo}/actions/artifacts/{a['id']}/zip", token, raw=True)
+        print("还没有产物（工具链 workflow 可能还没跑完）")
+        return
+    a = max(arts, key=lambda x: x.get("created_at", ""))
+    print(f"取产物: {a['name']}  创建于 {a['created_at'][:19]}  {a['size_in_bytes']} 字节")
+    st, blob = call("GET", f"/repos/{owner}/{repo}/actions/artifacts/{a['id']}/zip",
+                    token, raw=True)
     if st != 200:
         sys.exit(f"❌ 下载失败: {st}")
-    out = os.path.join(ROOT, "build", "artifact.zip")
-    os.makedirs(os.path.dirname(out), exist_ok=True)
-    with open(out, "wb") as f:
+    outdir = os.path.join(ROOT, "build")
+    os.makedirs(outdir, exist_ok=True)
+    zpath = os.path.join(outdir, "wince-exe.zip")
+    with open(zpath, "wb") as f:
         f.write(blob)
-    print(f"✅ 已下载产物 {a['name']} → {out}（{len(blob)} 字节）")
+    with zipfile.ZipFile(zpath) as z:
+        names = z.namelist()
+        z.extractall(outdir)
+    print(f"✅ 已解压到 {outdir}/")
+    for n in names:
+        full = os.path.join(outdir, n)
+        if os.path.exists(full):
+            print(f"     {n}  ({os.path.getsize(full)} 字节)")
+
+
+def logs(token, repo):
+    """抓最近一次运行里失败任务的日志尾部，用于诊断"""
+    owner = call("GET", "/user", token)[1]["login"]
+    st, r = call("GET", f"/repos/{owner}/{repo}/actions/runs?per_page=5", token)
+    if st != 200:
+        sys.exit(f"❌ {st} {r}")
+    for w in r.get("workflow_runs", []):
+        st, jobs = call("GET", f"/repos/{owner}/{repo}/actions/runs/{w['id']}/jobs", token)
+        for j in jobs.get("jobs", []):
+            print(f"── 运行 {w['id']} / 任务 {j['name']}  [{j.get('conclusion')}] ──")
+            for s in j.get("steps", []):
+                ic = {"success": "✅", "failure": "❌", "skipped": "⏭"}.get(s.get("conclusion"), "  ")
+                print(f"   {ic} {s['name']}")
+            if j.get("conclusion") == "failure":
+                st2, blob = call("GET", f"/repos/{owner}/{repo}/actions/jobs/{j['id']}/logs",
+                                 token, raw=True)
+                if st2 == 200:
+                    text = blob.decode("utf-8", "replace")
+                    print("   ── 日志末尾 40 行 ──")
+                    for line in text.splitlines()[-40:]:
+                        print("   " + line[:180])
+                else:
+                    print(f"   （抓日志失败 {st2}）")
+        if w.get("conclusion") == "success":
+            break
+
 
 if __name__ == "__main__":
     if len(sys.argv) < 3:
         sys.exit(__doc__)
     cmd, token = sys.argv[1], sys.argv[2]
     repo = sys.argv[3] if len(sys.argv) > 3 else "wince-carlife"
-    {"push": push, "run": run, "status": status, "fetch": fetch}.get(cmd, lambda *a: sys.exit(f"未知命令 {cmd}"))(token, repo)
+    {"push": push, "run": run, "status": status, "fetch": fetch, "logs": logs}.get(cmd, lambda *a: sys.exit(f"未知命令 {cmd}"))(token, repo)
