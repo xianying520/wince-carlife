@@ -349,8 +349,7 @@ int adb_open(ADB *a, const char *service)
         ADB_CHAN *c0 = &a->ch[idx];
         int sl = (int)strlen(service);
         memset(c0, 0, sizeof(*c0));
-        c0->used = 1;
-        c0->local_id = local_id;
+        c0->used = 1;                  /* 本地 id 不用存：就是下标 +1 */
         c0->remote_id = -1;            /* 还没有，收到 OKAY 再补 */
         if (sl > 63) sl = 63;
         memcpy(c0->service, service, (size_t)sl);

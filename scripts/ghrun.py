@@ -42,7 +42,15 @@ def fetch_log(token, job_id):
     opener = urllib_request.build_opener(_NoAuthOnRedirect)
     with opener.open(r, timeout=180) as x:
         txt = x.read().decode("utf-8", "replace")
-    return [l.split("Z ", 1)[-1] for l in txt.splitlines()]
+    out = []
+    for l in txt.splitlines():
+        l = l.split("Z ", 1)[-1]
+        # 跳过 workflow 自己回显出来的脚本源码（带 ANSI 色码），
+        # 否则里面 echo 的 "❌ ..." 会被误当成真正的失败点。
+        if "\x1b[36;1m" in l or "\x1b[0m" in l and "echo" in l:
+            continue
+        out.append(l)
+    return out
 
 
 def main():
