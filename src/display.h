@@ -10,7 +10,13 @@
 #ifndef DISPLAY_H
 #define DISPLAY_H
 
+#ifdef DISP_HOST_TEST
+/* 电脑上跑时用等价垫片 —— 业务逻辑一行不改，两边共用同一份代码 */
+#include "clhost.h"
+#include "gdishim.h"
+#else
 #include <windows.h>
+#endif
 
 typedef struct {
     int sw, sh;                   /* 源（手机画面）尺寸 */

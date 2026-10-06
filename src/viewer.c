@@ -61,6 +61,14 @@ static unsigned long g_t0 = 0;
 static int      g_fps = 0;
 static int      g_miss = 0;                /* 连续收到非 JPEG 帧的次数 */
 
+/* 把"不是 JPEG"的帧存到 U 盘上，让用户带回来。
+ * 为什么必须做：手机推的到底是 JPEG 还是 H.264，决定我们要不要移植一个
+ * H.264 解码器 —— 这是整个项目剩下的最大未知数。而只要头几个字节就能
+ * 确定（H.264 是 00 00 00 01 + NAL 头）。光看屏幕看不出来，必须存成文件。
+ * 文件名和《现场测试说明》里承诺的一致，别改。 */
+#define DUMP_CAP (32 * 1024)
+static DWORD    g_dumped = 0;
+
 /* ── 传输路线 ──
  * 优先走 ADB 端口转发（车机做 ADB 主机 → 手机端口搬到本机 127.0.0.1）。
  * 这条路不需要 USB 网卡，是 CarLife 有线模式的标准架构。
@@ -85,6 +93,31 @@ static void set_status(const WCHAR *s)
 }
 
 /* ── 把一帧画出来 ── */
+static void dump_unknown_frame(const unsigned char *buf, int len)
+{
+    HANDLE h;
+    DWORD  bw = 0;
+    int    n;
+
+    if (g_dumped >= DUMP_CAP || len <= 0)
+        return;
+    n = len;
+    if ((DWORD)n > DUMP_CAP - g_dumped)
+        n = (int)(DUMP_CAP - g_dumped);
+
+    /* 第一帧用 CREATE_ALWAYS（覆盖上次的旧文件），之后追加 */
+    h = CreateFileW(L"video-dump.bin",
+                    (g_dumped == 0) ? GENERIC_WRITE : FILE_APPEND_DATA,
+                    0, NULL,
+                    (g_dumped == 0) ? CREATE_ALWAYS : OPEN_ALWAYS,
+                    FILE_ATTRIBUTE_NORMAL, NULL);
+    if (h == INVALID_HANDLE_VALUE)
+        return;
+    WriteFile(h, buf, (DWORD)n, &bw, NULL);
+    CloseHandle(h);
+    g_dumped += bw;
+}
+
 static void show_frame(const unsigned char *buf, int len)
 {
     int r;
@@ -114,11 +147,13 @@ static void show_frame(const unsigned char *buf, int len)
             InvalidateRect(g_hwnd, 0, FALSE);
     } else {
         /* 不是 JPEG —— 极可能是 H.264。不装作在显示，直接说明。 */
+        dump_unknown_frame(buf, len);
         g_miss++;
         if (g_miss == 3) {
             const WCHAR *what = cl_guess_codec(buf, len);
             WCHAR t[240];
-            wsprintfW(t, L"手机推的是 %s，不是 JPEG，本程序还不能显示", what);
+            wsprintfW(t, L"手机推的是 %s，不是 JPEG（已存 video-dump.bin，请带回）",
+                      what);
             set_status(t);
         }
     }

@@ -1,5 +1,6 @@
 #include "display.h"
 
+#include <stdlib.h>     /* malloc/free 显式包含：不靠 windows.h 间接带进来 */
 #include <string.h>
 
 int disp_init(DISP *d, int sw, int sh)

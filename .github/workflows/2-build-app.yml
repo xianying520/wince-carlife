@@ -140,6 +140,12 @@ jobs:
         run: |
           python3 scripts/adbproxy_test.py
 
+      - name: 验证画面呈现层（像素格式 + 铺屏参数 + 触摸换算）
+        run: |
+          gcc -O1 -g -Wall -DDISP_HOST_TEST -Ihost -Isrc \
+              -o /tmp/test_display host/test_display.c src/display.c
+          /tmp/test_display
+
       - name: 全链路集成验证（假手机 → 假 adbd → 转发器 → CarLife 客户端 → 解码）
         run: |
           python3 scripts/integration_test.py
