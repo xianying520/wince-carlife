@@ -63,8 +63,21 @@ int main(void)
                      rgb[0], rgb[1], rgb[2], rgb[3]);
             check("（颜色顺序没有反）", rgb[2] == 255, buf);
         }
-        check("最后一个像素也写到了",
-              f[(32 * 16 - 1) * 4 + 2] == 255, "");
+        {
+            char buf[200];
+            int k, bad = 0, firstbad = -1;
+            for (k = 0; k < 32 * 16; k++)
+                if (f[k * 4 + 2] != 255) {
+                    bad++;
+                    if (firstbad < 0) firstbad = k;
+                }
+            snprintf(buf, sizeof(buf),
+                     "fb=%p f=%p sw=%d sh=%d cap=%d | f[2]=%d f[2046]=%d | "
+                     "R!=255 的像素 %d 个，第一个是第 %d 个",
+                     (void *)d.fb, (void *)f, d.sw, d.sh, d.fbcap,
+                     f[2], f[2046], bad, firstbad);
+            check("最后一个像素也写到了", f[(32 * 16 - 1) * 4 + 2] == 255, buf);
+        }
     }
 
     printf("── 尺寸不符时拒绝写入（防越界）──\n");
