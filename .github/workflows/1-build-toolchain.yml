@@ -7,6 +7,11 @@ name: 1. Build CeGCC toolchain (ARM, run once)
 
 on:
   workflow_dispatch:
+    inputs:
+      use_fallback:
+        description: "强制使用备用工具链 MaxKellermann（当 enlyze 那套编不出 GUI 程序时用）"
+        type: boolean
+        default: false
   push:
     paths:
       - '.github/workflows/1-build-toolchain.yml'
@@ -24,6 +29,12 @@ jobs:
       TARBALL: ${{ github.workspace }}/../cegcc-arm-mingw32ce.tar.gz
 
     steps:
+      # ⚠ 必须有这一步：否则 runner 上没有仓库文件，
+      #    scripts/checkpe.py 找不到，gh 命令也会报
+      #    "fatal: not a git repository"。上次就是这么失败的。
+      - name: 取出仓库代码（提供 scripts/ 与 git 上下文）
+        uses: actions/checkout@v4
+
       - name: 安装宿主构建依赖
         run: |
           sudo apt-get update
@@ -40,6 +51,7 @@ jobs:
 
       # ── 首选：enlyze 分支（GCC 9.3.0，在较新的宿主上更容易编过）──────────
       - name: 克隆 enlyze/cegcc-build（含子模块）
+        if: ${{ !inputs.use_fallback }}
         run: |
           git clone --recursive https://github.com/enlyze/cegcc-build.git "$SRC"
           cd "$SRC"
@@ -49,6 +61,7 @@ jobs:
 
       - name: 编译 arm-mingw32ce 工具链（enlyze）
         id: build_enlyze
+        if: ${{ !inputs.use_fallback }}
         continue-on-error: true
         run: |
           mkdir -p "$(dirname "$PREFIX")"
@@ -57,9 +70,9 @@ jobs:
 
       # ── 回退：MaxKellermann 原版（ARM 默认目标）──────────────────────────
       - name: 回退到 MaxKellermann/cegcc-build
-        if: steps.build_enlyze.outcome == 'failure'
+        if: ${{ steps.build_enlyze.outcome == 'failure' || inputs.use_fallback }}
         run: |
-          echo "::warning::enlyze 构建失败，回退 MaxKellermann 原版"
+          echo "::warning::改用 MaxKellermann 原版工具链"
           rm -rf "$SRC" "$PREFIX"
           git clone --recursive https://github.com/MaxKellermann/cegcc-build.git "$SRC"
           cd "$SRC"
@@ -120,7 +133,20 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          gh release view cegcc-arm >/dev/null 2>&1 \
-            || gh release create cegcc-arm --title "CeGCC ARM toolchain" \
+          # --repo 明确指定仓库：工作流没有 checkout 时 gh 也照样能用
+          gh release view cegcc-arm --repo "${{ github.repository }}" >/dev/null 2>&1 \
+            || gh release create cegcc-arm --repo "${{ github.repository }}" \
+                 --title "CeGCC ARM toolchain" \
                  --notes "CeGCC arm-mingw32ce 交叉工具链（CI 自编）。应用构建直接下载此资产。"
-          gh release upload cegcc-arm "$TARBALL" --clobber
+          gh release upload cegcc-arm "$TARBALL" --repo "${{ github.repository }}" --clobber
+          echo "✅ Release 资产上传完成"
+
+      # 双保险：Release 万一失败，还有 artifact 可拿
+      - name: 备份上传为 workflow 产物
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: cegcc-arm-toolchain
+          path: ${{ env.TARBALL }}
+          retention-days: 30
+          compression-level: 0
