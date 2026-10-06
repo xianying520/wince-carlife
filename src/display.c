@@ -1,0 +1,141 @@
+#include "display.h"
+
+#include <string.h>
+
+int disp_init(DISP *d, int sw, int sh)
+{
+    int need;
+
+    if (sw <= 0 || sh <= 0 || sw > 4096 || sh > 4096)
+        return -1;
+
+    need = sw * sh * 4;
+    if (d->fb && d->fbcap >= need) {
+        d->sw = sw;
+        d->sh = sh;
+        return 0;
+    }
+
+    if (d->fb) {
+        free(d->fb);
+        d->fb = 0;
+        d->fbcap = 0;
+    }
+
+    d->fb = (unsigned char *)malloc((size_t)need);
+    if (!d->fb)
+        return -1;
+
+    d->fbcap = need;
+    d->sw = sw;
+    d->sh = sh;
+    memset(d->fb, 0, (size_t)need);
+    return 0;
+}
+
+void disp_free(DISP *d)
+{
+    if (d->fb) {
+        free(d->fb);
+        d->fb = 0;
+    }
+    d->fbcap = 0;
+    d->sw = d->sh = 0;
+}
+
+void disp_set_rgb24(DISP *d, const unsigned char *rgb, int w, int h)
+{
+    int i, n;
+    unsigned char *p;
+
+    if (!d->fb || w != d->sw || h != d->sh)
+        return;
+    n = w * h;
+    p = d->fb;
+    for (i = 0; i < n; i++) {
+        /* BGRA 顺序（Windows DIB 是 BGR）*/
+        p[0] = rgb[i * 3 + 2];
+        p[1] = rgb[i * 3 + 1];
+        p[2] = rgb[i * 3 + 0];
+        p[3] = 0;
+    }
+    /* 源缓冲来自 nanojpeg，用完即可释放，这里不动它 */
+    (void)p;
+}
+
+void disp_set_gray8(DISP *d, const unsigned char *gray, int w, int h)
+{
+    int i, n;
+    unsigned char *p;
+
+    if (!d->fb || w != d->sw || h != d->sh)
+        return;
+    n = w * h;
+    p = d->fb;
+    for (i = 0; i < n; i++) {
+        unsigned char g = gray[i];
+        p[0] = g;
+        p[1] = g;
+        p[2] = g;
+        p[3] = 0;
+    }
+}
+
+void disp_paint(DISP *d, HDC hdc, const RECT *client)
+{
+    BITMAPINFOHEADER bi;
+    int cw, ch;
+
+    if (!d->fb || d->sw <= 0 || d->sh <= 0)
+        return;
+
+    cw = client->right - client->left;
+    ch = client->bottom - client->top;
+    if (cw <= 0 || ch <= 0)
+        return;
+
+    memset(&bi, 0, sizeof(bi));
+    bi.biSize        = sizeof(BITMAPINFOHEADER);
+    bi.biWidth       = d->sw;
+    /* 负高度 = 自上而下，和我们的缓冲方向一致，省一次翻转 */
+    bi.biHeight      = -d->sh;
+    bi.biPlanes      = 1;
+    bi.biBitCount    = 32;
+    bi.biCompression = BI_RGB;
+
+    StretchDIBits(hdc,
+                  client->left, client->top, cw, ch,
+                  0, 0, d->sw, d->sh,
+                  d->fb, (BITMAPINFO *)&bi, DIB_RGB_COLORS, SRCCOPY);
+    d->dw = cw;
+    d->dh = ch;
+}
+
+int disp_map_touch(const DISP *d, const RECT *client, int cx, int cy,
+                   int *px, int *py)
+{
+    int cw, ch, x, y;
+
+    if (d->sw <= 0 || d->sh <= 0)
+        return -1;
+
+    cw = client->right - client->left;
+    ch = client->bottom - client->top;
+    if (cw <= 0 || ch <= 0)
+        return -1;
+
+    x = cx - client->left;
+    y = cy - client->top;
+    if (x < 0 || y < 0 || x >= cw || y >= ch)
+        return -1;
+
+    /* 按比例换算到手机画面坐标 */
+    *px = (int)((long)x * d->sw / cw);
+    *py = (int)((long)y * d->sh / ch);
+
+    if (*px < 0) *px = 0;
+    if (*py < 0) *py = 0;
+    if (*px > d->sw - 1) *px = d->sw - 1;
+    if (*py > d->sh - 1) *py = d->sh - 1;
+    return 0;
+}

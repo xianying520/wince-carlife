@@ -1,8 +1,10 @@
 # WinCE 6.0 ARM 应用 —— 用 CeGCC (arm-mingw32ce) 交叉编译
 #
-# 产出两个独立程序（各自有自己的 WinMain，所以不能合并链接）：
-#   build/WinCE-CarLifeHU.exe   主程序骨架（只用 coredll）
-#   build/WinCE-NetProbe.exe    网络探测（额外链 ws2）
+# 四个独立程序，各自有自己的 WinMain，所以必须分别链接：
+#   build/WinCE-CarLifeHU.exe     主程序骨架（只用 coredll）
+#   build/WinCE-NetProbe.exe      网络/解码器/握手 全探测（额外链 ws2）
+#   build/WinCE-CarLifeClient.exe 协议客户端：握手→视频初始化→收帧取证
+#   build/WinCE-CarLifeView.exe   ⭐ 最终程序：显示手机画面 + 触屏回传
 CROSS  ?= arm-mingw32ce-
 CC     := $(CROSS)gcc
 
@@ -29,10 +31,11 @@ NETLIB  ?= -lws2
 MAIN_EXE   := $(BUILD)/WinCE-CarLifeHU.exe
 PROBE_EXE  := $(BUILD)/WinCE-NetProbe.exe
 CLIENT_EXE := $(BUILD)/WinCE-CarLifeClient.exe
+VIEWER_EXE := $(BUILD)/WinCE-CarLifeView.exe
 
-.PHONY: all main probe client check clean
+.PHONY: all main probe client viewer check clean
 
-all: main probe client
+all: main probe client viewer
 
 main: $(MAIN_EXE)
 	@echo "==> 主程序: $(MAIN_EXE)"
@@ -60,7 +63,7 @@ $(MAIN_EXE): $(BUILD)/main.o
 	$(CC) $(LDFLAGS) -o $@ $^ $(CORELIB)
 
 $(PROBE_EXE): $(BUILD)/netprobe.o $(BUILD)/carlife.o
-	$(CC) $(LDFLAGS) -o $@ $^ $(CORELIB) -lws2
+	$(CC) $(LDFLAGS) -o $@ $^ $(CORELIB) $(NETLIB)
 
 # 主客户端：握手 + 视频初始化 + 收帧（也链 ws2）
 client: $(CLIENT_EXE)
@@ -68,7 +71,26 @@ client: $(CLIENT_EXE)
 	@ls -l $(CLIENT_EXE)
 
 $(CLIENT_EXE): $(BUILD)/huclient.o $(BUILD)/carlife.o
-	$(CC) $(LDFLAGS) -o $@ $^ $(CORELIB) -lws2
+	$(CC) $(LDFLAGS) -o $@ $^ $(CORELIB) $(NETLIB)
+
+# ⭐ 最终程序：收帧 → nanojpeg 解码 → 显示 → 触摸回传
+viewer: $(VIEWER_EXE)
+	@echo "==> 最终程序: $(VIEWER_EXE)"
+	@ls -l $(VIEWER_EXE)
+
+$(BUILD)/viewer.o: src/viewer.c src/carlife.h src/display.h src/third_party/nanojpeg.h | $(BUILD)
+	$(CC) $(CFLAGS) -c $< -o $@
+
+$(BUILD)/display.o: src/display.c src/display.h | $(BUILD)
+	$(CC) $(CFLAGS) -c $< -o $@
+
+# nanojpeg 是第三方源码（MIT），不套用项目自身的 -DUNICODE 等旗标，
+# 并且关掉它自身的警告噪音 —— 我们不改第三方代码。
+$(BUILD)/nanojpeg.o: src/third_party/nanojpeg.c | $(BUILD)
+	$(CC) -Os -w -c $< -o $@
+
+$(VIEWER_EXE): $(BUILD)/viewer.o $(BUILD)/carlife.o $(BUILD)/display.o $(BUILD)/nanojpeg.o
+	$(CC) $(LDFLAGS) -o $@ $^ $(CORELIB) $(NETLIB)
 
 $(BUILD):
 	mkdir -p $(BUILD)

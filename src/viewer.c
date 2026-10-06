@@ -1,0 +1,399 @@
+/* viewer.c — 车机端最终程序：手机画面显示 + 触屏回传
+ *
+ * 链路：连手机 → 协议版本握手 → 视频初始化 → 请求 JPEG → 收帧 →
+ *       nanojpeg 解码 → StretchDIBits 显示 → 触摸按比例换算回传
+ *
+ * 为什么请求 JPEG 而不是 H.264：
+ *   已经集成并验证过 nanojpeg（MIT，919 行），车机软解 JPEG 现实可行；
+ *   H.264 软解在老 ARM 上很可能跑不动。若手机不理会 JPEG 请求仍发 H.264，
+ *   我们会检测出来并在状态栏明说，不会假装在显示。
+ */
+#include <windows.h>
+#include <winsock2.h>
+
+#include "carlife.h"
+#include "display.h"
+#include "third_party/nanojpeg.h"
+
+#define STATUS_H   22          /* 底部状态栏高度 */
+#define EXIT_W     58          /* 状态栏右侧「退出」按钮宽度 */
+#define RX_CAP     (512 * 1024)
+
+static HWND     g_hwnd = 0;
+static DISP     g_disp;
+static SOCKET   g_cmd = INVALID_SOCKET;
+static SOCKET   g_vid = INVALID_SOCKET;
+static SOCKET   g_touch = INVALID_SOCKET;
+static int      g_touch_hdr = CL_HDR_CMD;   /* 触摸包头长：8 或 12，未实证，先 8 */
+static int      g_quit = 0;
+static int      g_captured = 0;
+
+static unsigned char *g_rx = 0;
+static int      g_rxcap = 0;
+
+static WCHAR    g_status[256] = L"正在连接手机 ...";
+static int      g_frames = 0, g_decoded = 0, g_shown = 0;
+static unsigned long g_t0 = 0;
+static int      g_fps = 0;
+static int      g_miss = 0;                /* 连续收到非 JPEG 帧的次数 */
+
+/* ── 状态栏 ── */
+static void set_status(const WCHAR *s)
+{
+    int i;
+    for (i = 0; i < 250 && s[i]; i++)
+        g_status[i] = s[i];
+    g_status[i] = 0;
+    if (g_hwnd)
+        InvalidateRect(g_hwnd, 0, FALSE);
+}
+
+/* ── 把一帧画出来 ── */
+static void show_frame(const unsigned char *buf, int len)
+{
+    int r;
+
+    if (len >= 2 && buf[0] == 0xFF && buf[1] == 0xD8) {
+        /* JPEG */
+        njInit();
+        r = njDecode(buf, len);
+        if (r != NJ_OK) {
+            njDone();
+            g_miss++;
+            return;
+        }
+        if (disp_init(&g_disp, njGetWidth(), njGetHeight()) != 0) {
+            njDone();
+            return;
+        }
+        if (njIsColor())
+            disp_set_rgb24(&g_disp, njGetImage(), njGetWidth(), njGetHeight());
+        else
+            disp_set_gray8(&g_disp, njGetImage(), njGetWidth(), njGetHeight());
+        njDone();
+        g_decoded++;
+        g_shown++;
+        g_miss = 0;
+        if (g_hwnd)
+            InvalidateRect(g_hwnd, 0, FALSE);
+    } else {
+        /* 不是 JPEG —— 极可能是 H.264。不装作在显示，直接说明。 */
+        g_miss++;
+        if (g_miss == 3) {
+            const WCHAR *what = cl_guess_codec(buf, len);
+            WCHAR t[240];
+            wsprintfW(t, L"手机推的是 %s，不是 JPEG，本程序还不能显示", what);
+            set_status(t);
+        }
+    }
+}
+
+/* ── 触摸回传 ── */
+static void send_touch(int action, int x, int y)
+{
+    if (g_touch == INVALID_SOCKET)
+        return;
+    cl_send_touch_action(g_touch, action, x, y, g_touch_hdr);
+}
+
+/* ── 窗口过程 ── */
+static LRESULT CALLBACK WndProc(HWND h, UINT m, WPARAM w, LPARAM l)
+{
+    switch (m) {
+    case WM_PAINT: {
+        PAINTSTRUCT ps;
+        HDC dc = BeginPaint(h, &ps);
+        RECT rc, area;
+        GetClientRect(h, &rc);
+
+        area = rc;
+        area.bottom -= STATUS_H;
+
+        if (g_disp.fb) {
+            disp_paint(&g_disp, dc, &area);
+        } else {
+            RECT f = area;
+            FillRect(dc, &f, (HBRUSH)GetStockObject(WHITE_BRUSH));
+        }
+
+        /* 状态栏 */
+        {
+            RECT bar = rc;
+            HBRUSH br;
+            bar.top = rc.bottom - STATUS_H;
+            br = CreateSolidBrush(RGB(32, 32, 32));
+            FillRect(dc, &bar, br);
+            DeleteObject(br);
+
+            SetBkMode(dc, TRANSPARENT);
+            SetTextColor(dc, RGB(230, 230, 230));
+            bar.left += 6;
+            DrawTextW(dc, g_status, -1, &bar,
+                      DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS);
+
+            /* 退出按钮 */
+            {
+                RECT ex = rc;
+                HBRUSH eb = CreateSolidBrush(RGB(150, 40, 40));
+                ex.top = rc.bottom - STATUS_H;
+                ex.left = rc.right - EXIT_W;
+                FillRect(dc, &ex, eb);
+                DeleteObject(eb);
+                SetTextColor(dc, RGB(255, 255, 255));
+                DrawTextW(dc, L"退出", -1, &ex,
+                          DT_CENTER | DT_VCENTER | DT_SINGLELINE);
+            }
+        }
+        EndPaint(h, &ps);
+        return 0;
+    }
+
+    case WM_LBUTTONDOWN: {
+        RECT rc, area;
+        int x = (short)LOWORD(l), y = (short)HIWORD(l);
+        int px, py;
+        GetClientRect(h, &rc);
+
+        /* 右下角退出按钮 */
+        if (x >= rc.right - EXIT_W && y >= rc.bottom - STATUS_H) {
+            g_quit = 1;
+            DestroyWindow(h);
+            return 0;
+        }
+
+        area = rc;
+        area.bottom -= STATUS_H;
+        if (disp_map_touch(&g_disp, &area, x, y, &px, &py) == 0) {
+            SetCapture(h);
+            g_captured = 1;
+            send_touch(0, px, py);            /* 0 = 按下 */
+        }
+        return 0;
+    }
+
+    case WM_MOUSEMOVE: {
+        RECT rc, area;
+        int x = (short)LOWORD(l), y = (short)HIWORD(l);
+        int px, py;
+        if (!g_captured)
+            return 0;
+        GetClientRect(h, &rc);
+        area = rc;
+        area.bottom -= STATUS_H;
+        if (disp_map_touch(&g_disp, &area, x, y, &px, &py) == 0)
+            send_touch(2, px, py);            /* 2 = 移动 */
+        return 0;
+    }
+
+    case WM_LBUTTONUP: {
+        RECT rc, area;
+        int x = (short)LOWORD(l), y = (short)HIWORD(l);
+        int px, py;
+        if (!g_captured)
+            return 0;
+        g_captured = 0;
+        ReleaseCapture();
+        GetClientRect(h, &rc);
+        area = rc;
+        area.bottom -= STATUS_H;
+        if (disp_map_touch(&g_disp, &area, x, y, &px, &py) == 0)
+            send_touch(1, px, py);            /* 1 = 抬起 */
+        return 0;
+    }
+
+    case WM_KEYDOWN:
+        if (w == VK_ESCAPE || w == VK_BACK) {
+            g_quit = 1;
+            DestroyWindow(h);
+        }
+        return 0;
+
+    case WM_CLOSE:
+        g_quit = 1;
+        DestroyWindow(h);
+        return 0;
+
+    case WM_DESTROY:
+        PostQuitMessage(0);
+        return 0;
+    }
+    return DefWindowProcW(h, m, w, l);
+}
+
+/* ── 连接手机（找地址 + 握手）── */
+static SOCKET connect_cmd(unsigned long *ip_out)
+{
+    unsigned long ips[16];
+    int n, i;
+    SOCKET s;
+
+    n = cl_candidate_ips(ips, 16);
+    for (i = 0; i < n; i++) {
+        s = cl_connect(ips[i], CL_PORT_CMD, 1200);
+        if (s != INVALID_SOCKET) {
+            *ip_out = ips[i];
+            return s;
+        }
+    }
+    return INVALID_SOCKET;
+}
+
+static void run_session(void)
+{
+    unsigned long ip = 0;
+    SOCKET cmd;
+    int st;
+    unsigned long t0 = 0;
+
+    cmd = connect_cmd(&ip);
+    if (cmd == INVALID_SOCKET) {
+        set_status(L"没找到手机（7240 端口都不通）—— 请确认 USB 网络共享已开、Jovi InCar 已启动");
+        return;
+    }
+    set_status(L"已连上手机，正在握手 ...");
+
+    {
+        int match = -1;
+        unsigned long reply = 0;
+        st = cl_handshake(cmd, &match, &reply);
+        if (st != CL_OK) {
+            WCHAR t[200];
+            wsprintfW(t, L"握手失败（%d）—— 手机没回应协议版本", st);
+            set_status(t);
+            return;
+        }
+        if (match >= 0) {
+            WCHAR t[200];
+            wsprintfW(t, L"握手成功，手机认可协议版本（状态 %d）", match);
+            set_status(t);
+        }
+    }
+    g_cmd = cmd;
+
+    g_vid = cl_connect(ip, CL_PORT_VIDEO, 2000);
+    if (g_vid == INVALID_SOCKET) {
+        set_status(L"视频通道 8240 连不上");
+        return;
+    }
+
+    /* 这三个都走 CMD 通道（已由参考源码证实：
+     * 它们是 CCmdChannelModule 的成员方法，不是视频通道模块的），
+     * 所以只需要传控制 socket。 */
+    if (cl_send_video_encoder_init(cmd, CL_VIDEO_W, CL_VIDEO_H, CL_VIDEO_FPS) != CL_OK) {
+        set_status(L"VIDEO_ENCODER_INIT 发送失败");
+        return;
+    }
+    if (cl_send_video_encoder_start(cmd) != CL_OK) {
+        set_status(L"VIDEO_ENCODER_START 发送失败");
+        return;
+    }
+    /* 明确要求 JPEG —— 我们只有 JPEG 解码器 */
+    cl_send_video_encoder_jpeg(cmd);
+
+    g_touch = cl_connect(ip, CL_PORT_TOUCH, 1500);
+
+    set_status(L"等画面中 ...");
+    t0 = GetTickCount();
+    g_t0 = t0;
+
+    for (;;) {
+        MSG msg;
+        unsigned long ts = 0, vt = 0;
+        int len = 0, r;
+
+        while (PeekMessageW(&msg, 0, 0, 0, PM_REMOVE)) {
+            if (msg.message == WM_QUIT)
+                return;
+            TranslateMessage(&msg);
+            DispatchMessageW(&msg);
+        }
+        if (g_quit)
+            return;
+
+        r = cl_recv_video(g_vid, &ts, &vt, g_rx, g_rxcap, &len, 20);
+        if (r == CL_OK) {
+            g_frames++;
+            show_frame(g_rx, len);
+            if (g_frames % 5 == 0) {
+                unsigned long el = GetTickCount() - g_t0;
+                WCHAR t[256];
+                if (el >= 1000) {
+                    g_fps = (int)((long)g_frames * 1000 / (long)el);
+                    wsprintfW(t, L"%d 帧  解码 %d  显示 %d  约 %d 帧/秒",
+                              g_frames, g_decoded, g_shown, g_fps);
+                    set_status(t);
+                }
+            }
+        } else if (r == CL_ERR_TIMEOUT) {
+            continue;                      /* 正常：暂时没数据 */
+        } else {
+            WCHAR t[200];
+            wsprintfW(t, L"收帧中断（错误 %d），已收 %d 帧", r, g_frames);
+            set_status(t);
+            return;
+        }
+    }
+}
+
+int WINAPI WinMain(HINSTANCE hi, HINSTANCE hp, LPWSTR cmdline, int show)
+{
+    WNDCLASSW wc;
+    WSADATA wsa;
+    RECT rc;
+    MSG msg;
+
+    (void)hp; (void)cmdline; (void)show;
+
+    g_rxcap = RX_CAP;
+    g_rx = (unsigned char *)malloc(g_rxcap);
+    if (!g_rx)
+        return 1;
+
+    memset(&g_disp, 0, sizeof(g_disp));
+
+    wc.style         = CS_HREDRAW | CS_VREDRAW;
+    wc.lpfnWndProc   = WndProc;
+    wc.cbClsExtra    = 0;
+    wc.cbWndExtra    = 0;
+    wc.hInstance     = hi;
+    wc.hIcon         = 0;
+    wc.hCursor       = 0;
+    wc.hbrBackground = (HBRUSH)GetStockObject(BLACK_BRUSH);
+    wc.lpszMenuName  = 0;
+    wc.lpszClassName = L"CarLifeView";
+    RegisterClassW(&wc);
+
+    rc.left = 0; rc.top = 0;
+    rc.right = GetSystemMetrics(SM_CXSCREEN);
+    rc.bottom = GetSystemMetrics(SM_CYSCREEN);
+
+    g_hwnd = CreateWindowExW(0, L"CarLifeView", L"CarLife 车机端",
+                             WS_POPUP | WS_VISIBLE,
+                             0, 0, rc.right, rc.bottom,
+                             0, 0, hi, 0);
+    if (!g_hwnd)
+        return 1;
+
+    ShowWindow(g_hwnd, SW_SHOW);
+    UpdateWindow(g_hwnd);
+
+    if (WSAStartup(MAKEWORD(2, 2), &wsa) != 0) {
+        set_status(L"WSAStartup 失败：车机没有 ws2 网络栈");
+    } else {
+        run_session();
+        WSACleanup();
+    }
+
+    /* 留在窗口里，让用户看清最后的状态 */
+    while (!g_quit && GetMessageW(&msg, 0, 0, 0)) {
+        TranslateMessage(&msg);
+        DispatchMessageW(&msg);
+    }
+
+    if (g_cmd   != INVALID_SOCKET) closesocket(g_cmd);
+    if (g_vid   != INVALID_SOCKET) closesocket(g_vid);
+    if (g_touch != INVALID_SOCKET) closesocket(g_touch);
+    disp_free(&g_disp);
+    if (g_rx) free(g_rx);
+    return 0;
+}
