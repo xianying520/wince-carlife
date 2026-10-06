@@ -31,6 +31,19 @@
 #define CL_MSG_VIDEO_ENCODER_START        0x00018009UL
 #define CL_MSG_VIDEO_ENCODER_JPEG         0x00018056UL
 #define CL_MSG_VIDEO_ENCODER_JPEG_ACK     0x00010057UL
+/* ── 触摸通道消息（注意 0x0006 前缀 = 独立通道）── */
+#define CL_MSG_TOUCH_ACTION               0x00068001UL
+#define CL_MSG_TOUCH_ACTION_DOWN          0x00068002UL
+#define CL_MSG_TOUCH_ACTION_UP            0x00068003UL
+#define CL_MSG_TOUCH_ACTION_MOVE          0x00068004UL
+#define CL_MSG_TOUCH_CAR_HARD_KEY         0x00068008UL
+
+#define CL_KEYCODE_HOME        0x00000001
+#define CL_KEYCODE_PHONE_CALL  0x00000002
+#define CL_KEYCODE_PHONE_END   0x00000003
+#define CL_KEYCODE_NAVI        0x0000000B
+#define CL_KEYCODE_MEDIA       0x00000009
+
 #define CL_MSG_HU_AUTHEN_REQUEST          0x00018048UL
 #define CL_MSG_MD_AUTHEN_RESPONSE         0x00010049UL
 
@@ -80,6 +93,13 @@ int cl_send_video_encoder_jpeg(SOCKET s);
 
 /* 判断一帧数据的编码格式，返回可读字符串（用于现场诊断）。 */
 const WCHAR *cl_guess_codec(const unsigned char *p, int len);
+
+/* ── 触摸回传 ──
+ * hdr_len 传 CL_HDR_CMD(8) 或 CL_HDR_MEDIA(12)：
+ * 参考实现把触摸归在 CTRL 通道（8 字节），但未实证，
+ * 所以留成参数，两条都试，以手机有响应的那条为准。 */
+int cl_send_touch_action(SOCKET s, int action, int x, int y, int hdr_len);
+int cl_send_hard_key(SOCKET s, int keycode, int hdr_len);
 
 /* 生成候选手机地址表（同网段 .1/.129/.100 + 常见 USB 共享地址）。
  * 返回个数；调用前必须先 WSAStartup。 */

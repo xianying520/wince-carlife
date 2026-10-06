@@ -130,18 +130,25 @@ static int recv_all(SOCKET s, unsigned char *p, int len, int timeout_ms)
     return CL_OK;
 }
 
-int cl_send_cmd(SOCKET s, unsigned long msg_id,
-                const unsigned char *body, int body_len)
+/* 通用发包：按 hdr_len 决定用 8 字节还是 12 字节包头。
+ *   hdr_len == 8  : [0..1]size(BE16) [2..3]保留   [4..7] 消息ID(BE32)
+ *   hdr_len == 12 : [0..3]size(BE32) [4..7]时间戳 [8..11]消息ID(BE32) */
+static int send_packet(SOCKET s, unsigned long msg_id,
+                       const unsigned char *body, int body_len, int hdr_len)
 {
-    unsigned char hdr[CL_HDR_CMD];
+    unsigned char hdr[CL_HDR_MEDIA];
     int r;
 
-    put_be16(hdr, (unsigned int)body_len);
-    hdr[2] = 0;
-    hdr[3] = 0;
-    put_be32(hdr + 4, msg_id);
+    memset(hdr, 0, sizeof(hdr));
+    if (hdr_len == CL_HDR_MEDIA) {
+        put_be32(hdr, (unsigned long)body_len);
+        put_be32(hdr + 8, msg_id);
+    } else {
+        put_be16(hdr, (unsigned int)body_len);
+        put_be32(hdr + 4, msg_id);
+    }
 
-    r = send_all(s, hdr, CL_HDR_CMD, 3000);
+    r = send_all(s, hdr, hdr_len, 3000);
     if (r != CL_OK)
         return r;
     if (body_len > 0) {
@@ -150,6 +157,12 @@ int cl_send_cmd(SOCKET s, unsigned long msg_id,
             return r;
     }
     return CL_OK;
+}
+
+int cl_send_cmd(SOCKET s, unsigned long msg_id,
+                const unsigned char *body, int body_len)
+{
+    return send_packet(s, msg_id, body, body_len, CL_HDR_CMD);
 }
 
 int cl_recv_cmd(SOCKET s, unsigned long *msg_id,
@@ -305,6 +318,29 @@ const WCHAR *cl_guess_codec(const unsigned char *p, int len)
     if (len >= 4 && p[0] == 0x00 && p[1] == 0x00 && p[2] == 0x00 && p[3] == 0x00)
         return L"全零(可能无数据)";
     return L"未知格式";
+}
+
+/* CarlifeTouchAction{action=1, x=2, y=3} —— 全是 int32 */
+int cl_send_touch_action(SOCKET s, int action, int x, int y, int hdr_len)
+{
+    unsigned char body[32];
+    int n = 0;
+
+    n += pb_int32(body + n, 1, action);
+    n += pb_int32(body + n, 2, x);
+    n += pb_int32(body + n, 3, y);
+
+    return send_packet(s, CL_MSG_TOUCH_ACTION, body, n, hdr_len);
+}
+
+/* CarlifeCarHardKeyCode{keycode=1} */
+int cl_send_hard_key(SOCKET s, int keycode, int hdr_len)
+{
+    unsigned char body[16];
+    int n = 0;
+
+    n += pb_int32(body + n, 1, keycode);
+    return send_packet(s, CL_MSG_TOUCH_CAR_HARD_KEY, body, n, hdr_len);
 }
 
 /* 生成候选手机地址：本机同网段 .1/.129/.100 + 常见 USB 网络共享地址。
