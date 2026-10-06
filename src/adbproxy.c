@@ -154,7 +154,15 @@ int adbp_launch_phone_app(char *detail, int cap)
     snprintf(cmd, sizeof(cmd),
              "monkey -p %s -c android.intent.category.LAUNCHER 1", pkg);
     buf[0] = 0;
-    adb_run_shell(&g_adb, cmd, buf, (int)sizeof(buf), 6000);
+    /* 这条命令的成败必须检查。以前没检查，于是命令压根没发出去也照样报
+     * "已尝试启动"，把真正的问题盖住了。 */
+    r = adb_run_shell(&g_adb, cmd, buf, (int)sizeof(buf), 6000);
+    if (r != 0) {
+        snprintf(g_note, sizeof(g_note) - 1,
+                 "启动命令没发出去 %s（adb_run_shell 返回 %d）", pkg, r);
+        if (detail) snprintf(detail, (size_t)cap, "%s", g_note);
+        return -1;
+    }
 
     snprintf(g_note, sizeof(g_note) - 1, "已尝试启动手机端 %s", pkg);
     if (detail)

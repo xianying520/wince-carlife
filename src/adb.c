@@ -371,9 +371,17 @@ int adb_open(ADB *a, const char *service)
     }
 
     {
-        char svc[64];
+        /* ⚠ 服务名缓冲区要够大。原来这里是 char svc[64]、超过 62 字符就
+         *   直接返回失败，而真实的 shell 命令很容易超：
+         *     shell:monkey -p com.baidu.carlife -c android.intent.category.LAUNCHER 1
+         *   就已经 67 个字符了 —— 于是"启动手机端"这一步悄悄失败，调用方
+         *   还以为是成功了（adb_open 返回负值被忽略，只当命令没输出）。
+         *   真机上 am start 之类的命令只会更长。这个坑是主机端到端测试里
+         *   "假手机只收到一条 shell 命令"暴露出来的。
+         *   顺带把返回值也检查掉，别再静默失败。 */
+        char svc[512];
         int sl = (int)strlen(service);
-        if (sl > 62) return -2;
+        if (sl > 500) return -2;
         memcpy(svc, service, (size_t)sl);
         svc[sl] = 0;
         /* OPEN 的服务名按惯例带结尾 0 */
@@ -490,7 +498,7 @@ int adb_run_shell(ADB *a, const char *cmd, char *out, int cap, int timeout_ms)
 
     id = adb_open(a, service);
     if (id < 0)
-        return id;
+        return id;              /* 负值如实往外传，调用方必须检查 */
 
     /* 命令的输出会以 WRTE 陆续到达，命令结束时对端发 CLSE。
      * 这里一边收一边等，直到通道关闭或超时。 */
