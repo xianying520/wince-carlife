@@ -41,27 +41,12 @@ int main(int argc, char **argv)
 
     printf("══ 用真实协议代码连假手机 ══\n");
 
-    /* ⓪ 诊断：先用最朴素的方式连一次。
-     * 这样能立刻分清是"兼容层(shim)的问题"还是"协议代码的问题" ——
-     * 否则只能对着一句"连不上"猜。 */
-    {
-        int fd;
-        struct sockaddr_in sa;
-        int r2;
-        fd = socket(AF_INET, SOCK_STREAM, 0);
-        printf("     [诊断] socket() = %d\n", fd);
-        memset(&sa, 0, sizeof(sa));
-        sa.sin_family      = AF_INET;
-        sa.sin_port        = htons((unsigned short)CL_PORT_CMD);
-        sa.sin_addr.s_addr = ip;
-        errno = 0;
-        r2 = connect(fd, (struct sockaddr *)&sa, sizeof(sa));
-        printf("     [诊断] 朴素阻塞 connect() = %d  errno=%d (%s)\n",
-               r2, errno, strerror(errno));
-        if (fd >= 0)
-            close(fd);
-        printf("     [诊断] sizeof(long)=%zu  ip=0x%08lx\n", sizeof(long), ip);
-    }
+    /* ⓪ 这里原先有一段"朴素 blocking connect"诊断，已删除。
+     * 原因：它连的也是 7240，而假手机的 accept() 会先接到它 ——
+     * 于是真正要测的那条连接被晾在队列里，假手机永远读不到协议数据。
+     * 这个坑让整个 CMD 通道看起来"发送成功但对方收不到"，
+     * 查了很久才发现是测试脚手架自己造成的。
+     * 结论：诊断程序绝不能借用被测目标正在用的端口。 */
 
     /* ① 控制通道 + 握手 */
     errno = 0;
