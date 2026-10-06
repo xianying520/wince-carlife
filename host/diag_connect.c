@@ -45,7 +45,7 @@ int main(void)
         tv.tv_sec  = 2;
         tv.tv_usec = 0;
         errno = 0;
-        r = select(0, NULL, &wf, NULL, &tv);
+        r = select((int)s + 1, NULL, &wf, NULL, &tv);   /* 修复后：nfds 必须正确 */
         printf("  4) select() = %d  errno=%d (%s)\n", r, errno, strerror(errno));
         printf("     tv 剩余 = %ld.%06ld\n", (long)tv.tv_sec, (long)tv.tv_usec);
     }
