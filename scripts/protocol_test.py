@@ -53,6 +53,7 @@ def read_pkt(conn, hdr):
     body = recvn(conn, size) if size else b""
     if body is None:
         return None
+    print(f"    [假手机] 收到包 msgID=0x{mid:08x} 长度={len(body)}")
     return mid, body
 
 
@@ -84,9 +85,12 @@ def cmd_server(ready):
     srv.bind((HOST, PORT_CMD))
     srv.listen(1)
     with lock:
-        srv_state[PORT_CMD] = "ok"      # 已监听 ≠ 函数返回。accept() 会一直阻塞，
+        srv_state[PORT_CMD] = "ok"
+    print("    [假手机] 7240 已在监听")
+    conn_t = None      # 已监听 ≠ 函数返回。accept() 会一直阻塞，
     ready.set()                       # 等 fn 返回才标记的话状态表永远是空的。
-    conn, _ = srv.accept()
+    conn, addr = srv.accept()
+    print(f"    [假手机] 有人连上了: {addr}")
     conn.settimeout(8)
 
     # ① 握手：HU_PROTOCOL_VERSION + CarlifeProtocolVersion{1,0}
@@ -142,9 +146,11 @@ def video_server(ready):  # noqa: D401
     srv.bind((HOST, PORT_VIDEO))
     srv.listen(1)
     with lock:
-        srv_state[PORT_VIDEO] = "ok"      # 已监听 ≠ 函数返回。accept() 会一直阻塞，
+        srv_state[PORT_VIDEO] = "ok"
+    print("    [假手机] 8240 已在监听")      # 已监听 ≠ 函数返回。accept() 会一直阻塞，
     ready.set()                       # 等 fn 返回才标记的话状态表永远是空的。
-    conn, _ = srv.accept()
+    conn, addr = srv.accept()
+    print(f"    [假手机] 有人连上了: {addr}")
     jpg = open(TEST_JPEG_PATH, "rb").read()
     # 视频通道用 12 字节包头：size(BE32) timestamp(BE32) msgID(BE32)
     conn.sendall(struct.pack(">III", len(jpg), 12345, 0x00010000) + jpg)
@@ -159,9 +165,11 @@ def touch_server(ready):
     srv.bind((HOST, PORT_TOUCH))
     srv.listen(1)
     with lock:
-        srv_state[PORT_TOUCH] = "ok"      # 已监听 ≠ 函数返回。accept() 会一直阻塞，
+        srv_state[PORT_TOUCH] = "ok"
+    print("    [假手机] 9340 已在监听")      # 已监听 ≠ 函数返回。accept() 会一直阻塞，
     ready.set()                       # 等 fn 返回才标记的话状态表永远是空的。
-    conn, _ = srv.accept()
+    conn, addr = srv.accept()
+    print(f"    [假手机] 有人连上了: {addr}")
     conn.settimeout(8)
 
     # 写法 A：专用消息 + CarlifeTouchSinglePoint{x=1,y=2}
@@ -274,6 +282,11 @@ def main():
 
     for t in ts:
         t.join(timeout=6)
+
+    if thread_err:
+        print("\n⚠ 假手机线程异常（这些是测试环境自己的问题，不是被测代码的）：")
+        for e in thread_err:
+            print("   -", e)
 
     print("\n══ 假手机侧的逐字节核对结果 ══")
     print(f"  共收到 {len(received)} 个包")

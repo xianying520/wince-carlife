@@ -5,6 +5,8 @@
 
 #include "carlife.h"
 
+#include <signal.h>
+
 static int fails = 0;
 
 static void ck(const char *what, int ok)
@@ -31,6 +33,11 @@ int main(int argc, char **argv)
      * 这个坑已经踩过一次。 */
     setvbuf(stdout, NULL, _IONBF, 0);
     setvbuf(stderr, NULL, _IONBF, 0);
+
+    /* 忽略 SIGPIPE。Windows 的 socket 从不产生这个信号，所以忽略它才是
+     * 与车机行为对齐；否则一旦往已被对方关闭的 socket 写数据，进程会当场
+     * 被信号杀掉（退出码 -13），看起来像"崩溃"，其实是环境差异。 */
+    signal(SIGPIPE, SIG_IGN);
 
     printf("══ 用真实协议代码连假手机 ══\n");
 
