@@ -84,6 +84,13 @@ int cl_recv_cmd(SOCKET s, unsigned long *msg_id,
  * 成功返回 CL_OK 并把手机返回的 matchStatus 写进 *match_status。 */
 int cl_handshake(SOCKET s, int *match_status, unsigned long *reply_id);
 
+/* 重发一次 HU_PROTOCOL_VERSION。
+ * 参考实现（CarLifeLibTest.cpp）明确注释：
+ * "it is necessary to send MSG_CMD_HU_PROTOCOL_VERSION message"
+ * 且在【每个通道使用前】都要发一次（视频/音频/触摸都算）。
+ * 发完顺手把可能到来的回应收掉，免得留在 CMD 缓冲里干扰后续读取。 */
+int cl_resend_version(SOCKET s);
+
 /* ── 视频通道 ──
  * 通知手机"以 w x h @ fps 编码"，手机回 VIDEO_ENCODER_INIT_DONE。 */
 int cl_send_video_encoder_init(SOCKET s, int w, int h, int fps);

@@ -17,6 +17,7 @@
 
 #define STATUS_H   22          /* 底部状态栏高度 */
 #define EXIT_W     58          /* 状态栏右侧「退出」按钮宽度 */
+#define TOG_W      56          /* 状态栏「触摸包头」切换按钮宽度 */
 #define RX_CAP     (512 * 1024)
 
 static HWND     g_hwnd = 0;
@@ -131,6 +132,25 @@ static LRESULT CALLBACK WndProc(HWND h, UINT m, WPARAM w, LPARAM l)
             DrawTextW(dc, g_status, -1, &bar,
                       DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS);
 
+            /* 触摸包头长度切换按钮：
+             * 触摸消息该用 8 字节还是 12 字节包头，参考源码只能推出是
+             * CTRL 通道(8)，但未在真机上实证过。做成按钮，现场可以直接试，
+             * 不用为了改一个数字重新编译一轮。 */
+            {
+                RECT tg = rc;
+                HBRUSH tb = CreateSolidBrush(g_touch_hdr == CL_HDR_CMD
+                                             ? RGB(40, 90, 40) : RGB(120, 90, 20));
+                WCHAR lbl[24];
+                tg.top = rc.bottom - STATUS_H;
+                tg.right = rc.right - EXIT_W;
+                tg.left = tg.right - TOG_W;
+                FillRect(dc, &tg, tb);
+                DeleteObject(tb);
+                SetTextColor(dc, RGB(255, 255, 255));
+                wsprintfW(lbl, L"触包%d", g_touch_hdr);
+                DrawTextW(dc, lbl, -1, &tg, DT_CENTER | DT_VCENTER | DT_SINGLELINE);
+            }
+
             /* 退出按钮 */
             {
                 RECT ex = rc;
@@ -158,6 +178,13 @@ static LRESULT CALLBACK WndProc(HWND h, UINT m, WPARAM w, LPARAM l)
         if (x >= rc.right - EXIT_W && y >= rc.bottom - STATUS_H) {
             g_quit = 1;
             DestroyWindow(h);
+            return 0;
+        }
+        /* 触摸包头长度切换 */
+        if (x >= rc.right - EXIT_W - TOG_W && x < rc.right - EXIT_W
+            && y >= rc.bottom - STATUS_H) {
+            g_touch_hdr = (g_touch_hdr == CL_HDR_CMD) ? CL_HDR_MEDIA : CL_HDR_CMD;
+            InvalidateRect(h, 0, FALSE);
             return 0;
         }
 
@@ -276,6 +303,9 @@ static void run_session(void)
         return;
     }
 
+    /* 参考实现要求：每个通道使用前都要重发一次协议版本。 */
+    cl_resend_version(cmd);
+
     /* 这三个都走 CMD 通道（已由参考源码证实：
      * 它们是 CCmdChannelModule 的成员方法，不是视频通道模块的），
      * 所以只需要传控制 socket。 */
@@ -291,6 +321,8 @@ static void run_session(void)
     cl_send_video_encoder_jpeg(cmd);
 
     g_touch = cl_connect(ip, CL_PORT_TOUCH, 1500);
+    if (g_touch != INVALID_SOCKET)
+        cl_resend_version(cmd);       /* 触摸通道使用前也要求重发 */
 
     set_status(L"等画面中 ...");
     t0 = GetTickCount();

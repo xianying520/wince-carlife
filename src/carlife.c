@@ -340,6 +340,29 @@ const WCHAR *cl_guess_codec(const unsigned char *p, int len)
     return L"未知格式";
 }
 
+/* 见头文件说明：每个通道使用前都要重发一次协议版本 */
+int cl_resend_version(SOCKET s)
+{
+    unsigned char body[4];
+    unsigned char drain[128];
+    unsigned long msg_id = 0;
+    int blen = 0, r;
+
+    body[0] = 0x08;
+    body[1] = (unsigned char)CL_VER_MAJOR;
+    body[2] = 0x10;
+    body[3] = (unsigned char)CL_VER_MINOR;
+
+    r = cl_send_cmd(s, CL_MSG_HU_PROTOCOL_VERSION, body, 4);
+    if (r != CL_OK)
+        return r;
+
+    /* 手机大概率会回 MATCH_STATUS。这里只做「收掉不处理」，
+     * 超时是正常的（有些实现不回），所以忽略返回值。 */
+    (void)cl_recv_cmd(s, &msg_id, drain, (int)sizeof(drain), &blen, 400);
+    return CL_OK;
+}
+
 /* CarlifeTouchAction{action=1, x=2, y=3} —— 全是 int32 */
 int cl_send_touch_action(SOCKET s, int action, int x, int y, int hdr_len)
 {
