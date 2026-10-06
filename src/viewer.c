@@ -386,8 +386,15 @@ static int open_transport(void)
         return 0;
     }
 
-    /* ADB 不通 —— 把原因留着，一会儿显示给用户看，这是现场排查的关键信息 */
-    lstrcpynA(g_adb_reason, reason, (int)sizeof(g_adb_reason) - 1);
+    /* ADB 不通 —— 把原因留着，一会儿显示给用户看，这是现场排查的关键信息。
+     * ⚠ 这里不能用 lstrcpynA：本工具链的 coredll 里只有 Unicode 版的
+     *   lstrcpynW，链接时会报 undefined reference。手写循环最稳妥。 */
+    {
+        int i;
+        for (i = 0; i < (int)sizeof(g_adb_reason) - 1 && reason[i]; i++)
+            g_adb_reason[i] = reason[i];
+        g_adb_reason[i] = 0;
+    }
 
     /* 退回 USB 网络共享：手机开共享后车机会拿到 IP，扫常见网段 */
     {
