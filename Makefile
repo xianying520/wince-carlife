@@ -16,6 +16,12 @@ CFLAGS  := -Os -Wall -DUNICODE -D_UNICODE -Isrc
 # CI 会先探测出可用组合，再通过 make LDFLAGS=... 覆盖这里。
 LDFLAGS ?= -Wl,--subsystem,windowsce -s
 
+# 导入库名同样可能因工具链而异，CI 探测后覆盖。
+# 注意 NETLIB 必须是 WinCE 的 ws2（对应 ws2.dll），
+# 绝不是桌面的 ws2_32（对应 WS2_32.dll，车机上不存在）。
+CORELIB ?= -lcoredll
+NETLIB  ?= -lws2
+
 MAIN_EXE   := $(BUILD)/WinCE-CarLifeHU.exe
 PROBE_EXE  := $(BUILD)/WinCE-NetProbe.exe
 CLIENT_EXE := $(BUILD)/WinCE-CarLifeClient.exe
@@ -47,10 +53,10 @@ $(BUILD)/carlife.o: src/carlife.c src/carlife.h | $(BUILD)
 	$(CC) $(CFLAGS) -c $< -o $@
 
 $(MAIN_EXE): $(BUILD)/main.o
-	$(CC) $(LDFLAGS) -o $@ $^ -lcoredll
+	$(CC) $(LDFLAGS) -o $@ $^ $(CORELIB)
 
 $(PROBE_EXE): $(BUILD)/netprobe.o $(BUILD)/carlife.o
-	$(CC) $(LDFLAGS) -o $@ $^ -lcoredll -lws2
+	$(CC) $(LDFLAGS) -o $@ $^ $(CORELIB) -lws2
 
 # 主客户端：握手 + 视频初始化 + 收帧（也链 ws2）
 client: $(CLIENT_EXE)
@@ -58,7 +64,7 @@ client: $(CLIENT_EXE)
 	@ls -l $(CLIENT_EXE)
 
 $(CLIENT_EXE): $(BUILD)/huclient.o $(BUILD)/carlife.o
-	$(CC) $(LDFLAGS) -o $@ $^ -lcoredll -lws2
+	$(CC) $(LDFLAGS) -o $@ $^ $(CORELIB) -lws2
 
 $(BUILD):
 	mkdir -p $(BUILD)

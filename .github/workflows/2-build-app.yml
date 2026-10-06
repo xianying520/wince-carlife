@@ -30,30 +30,64 @@ jobs:
 
       # 先探测哪种链接方式能产出合法 WinCE PE，写进环境变量供后面用。
       # 这样即使工具链换版本、旗标变了，构建也能自愈。
-      - name: 探测可用的链接方式
+      # 一次性探测出「子系统旗标」和「库名」两件事，写进环境变量。
+      # 这样换工具链版本、旗标或库名变了，构建都能自愈，不用再废一轮编译。
+      - name: 探测可用的子系统旗标与库名
         run: |
           export PATH="$HOME/tc/cegcc/bin:$PATH"
-          printf '#include <windows.h>\nint WINAPI WinMain(HINSTANCE a,HINSTANCE b,LPWSTR c,int d){return 0;}\n' > /tmp/probe.c
+          echo "── 工具链里和 coredll / ws2 有关的库与头 ──"
+          find "$HOME/tc" \( -name 'libcoredll*' -o -name 'libws2*' -o -name 'coredll.def' \) 2>/dev/null | head -10
+          echo
+
+          printf '#include <windows.h>\nint WINAPI WinMain(HINSTANCE a,HINSTANCE b,LPWSTR c,int d){return 0;}\n' > /tmp/gui.c
+          printf '#include <winsock2.h>\nint WINAPI WinMain(HINSTANCE a,HINSTANCE b,LPWSTR c,int d){SOCKET s=socket(AF_INET,SOCK_STREAM,0);(void)s;return 0;}\n' > /tmp/net.c
+
+          SUBSYS=""; LIBS=""; NETLIBS=""
+          # 第一层：找能产出合法 WinCE PE 的子系统旗标 + coredll 设法
           for F in "-Wl,--subsystem,windowsce" "" "-Wl,--subsystem,9" "-mwindows"; do
-            rm -f /tmp/probe.exe
-            if arm-mingw32ce-gcc $F -o /tmp/probe.exe /tmp/probe.c -lcoredll >/dev/null 2>&1 \
-               && python3 scripts/checkpe.py /tmp/probe.exe --quiet; then
-              echo "选定链接旗标: [$F]"
-              echo "WINCE_LDFLAGS=$F" >> "$GITHUB_ENV"
-              python3 scripts/checkpe.py /tmp/probe.exe
-              exit 0
-            fi
-            echo "  ✗ [$F] 不可用"
+            for L in "-lcoredll" "" "-lcrtdll"; do
+              rm -f /tmp/gui.exe
+              if arm-mingw32ce-gcc $F -o /tmp/gui.exe /tmp/gui.c $L >/dev/null 2>&1 \
+                 && python3 scripts/checkpe.py /tmp/gui.exe --quiet; then
+                SUBSYS="$F"; LIBS="$L"
+                echo "✅ GUI 可用: 旗标=[$F]  库=[$L]"
+                break 2
+              fi
+            done
           done
-          echo "❌ 没有任何链接方式能产出合法 WinCE PE"
-          exit 1
+          if [ -z "$LIBS" ] && [ "$SUBSYS" != "" ]; then :; fi
+          if ! python3 scripts/checkpe.py /tmp/gui.exe --quiet 2>/dev/null; then
+            echo "❌ 没有任何组合能产出合法 WinCE PE —— 把上面工具链里能找到的库贴给我"
+            find "$HOME/tc" -name '*.a' 2>/dev/null | head -40
+            exit 1
+          fi
+          python3 scripts/checkpe.py /tmp/gui.exe
+
+          # 第二层：在 GUI 可用的前提下追加找网络库
+          for N in "-lws2" "-lwsock32" "-lws2_32" ""; do
+            rm -f /tmp/net.exe
+            if arm-mingw32ce-gcc $SUBSYS -o /tmp/net.exe /tmp/net.c $LIBS $N >/dev/null 2>&1; then
+              NETLIBS="$N"
+              echo "✅ 网络库可用: [$N]"
+              break
+            fi
+          done
+          if [ -z "$NETLIBS" ] && ! arm-mingw32ce-gcc $SUBSYS -o /tmp/net.exe /tmp/net.c $LIBS >/dev/null 2>&1; then
+            echo "⚠ 找不到可用的网络库，探测工具与客户端会编译失败（主程序不受影响）"
+          fi
+
+          echo "WINCE_LDFLAGS=$SUBSYS" >> "$GITHUB_ENV"
+          echo "WINCE_CORELIB=$LIBS"   >> "$GITHUB_ENV"
+          echo "WINCE_NETLIB=$NETLIBS" >> "$GITHUB_ENV"
+          echo
+          echo "最终选定: 旗标=[$SUBSYS]  核心库=[$LIBS]  网络库=[$NETLIBS]"
 
       # 主程序必须编过 —— 这是本次交付的底线
       - name: 编译主程序
         run: |
           export PATH="$HOME/tc/cegcc/bin:$PATH"
           make check
-          make main LDFLAGS="$WINCE_LDFLAGS -s"
+          make main LDFLAGS="$WINCE_LDFLAGS -s" CORELIB="$WINCE_CORELIB"
 
       # 探测工具是加分项：链接 -lws2 若失败（工具链没带这个导入库），
       # 不应拖垮主程序，所以 continue-on-error + 打印真实报错供诊断。
@@ -63,14 +97,14 @@ jobs:
           export PATH="$HOME/tc/cegcc/bin:$PATH"
           echo "── 查找 ws2 导入库 ──"
           find "$HOME/tc" -name 'libws2*' -o -name 'ws2*def' 2>/dev/null | head
-          make probe LDFLAGS="$WINCE_LDFLAGS -s"
+          make probe LDFLAGS="$WINCE_LDFLAGS -s" CORELIB="$WINCE_CORELIB" NETLIB="$WINCE_NETLIB"
 
       # 客户端同样属于加分项，但它的编译错误最有诊断价值（协议层首次编译）
       - name: 编译主客户端（失败不阻塞交付）
         continue-on-error: true
         run: |
           export PATH="$HOME/tc/cegcc/bin:$PATH"
-          make client LDFLAGS="$WINCE_LDFLAGS -s"
+          make client LDFLAGS="$WINCE_LDFLAGS -s" CORELIB="$WINCE_CORELIB" NETLIB="$WINCE_NETLIB"
 
       - name: 校验产物是 WinCE ARM PE
         run: |
