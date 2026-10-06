@@ -88,6 +88,15 @@ jobs:
         run: |
           python3 scripts/check_proto.py
 
+      # ── 协议实现的端到端验证 ──
+      # 用主机编译器编出【真实的 carlife.c】，连上 Python 起的"假手机"，
+      # 把它发出的每个包逐字节拆开核对。
+      # 字节序/包头/字段号/时序这类错误读代码看不出来，跑一遍就现形 ——
+      # 而这些错等去车上才发现，代价是一整趟车程。
+      - name: 协议实现端到端验证（真实代码 + 假手机）
+        run: |
+          python3 scripts/protocol_test.py
+
       # ── JPEG 解码器验证 ──
       # 分两步：① 主机上跑通证明算法正确 ② 能为 ARM 编译
       # 之所以要在主机跑：我们的产物是 ARM WinCE PE，跑不进 CI 的 x86 机器。

@@ -6,7 +6,13 @@
 #ifndef CARLIFE_H
 #define CARLIFE_H
 
+#ifdef CL_HOST_TEST
+/* 在电脑上跑协议测试时用等价兼容层代替 WinCE 的 socket 头。
+ * 见 host/clhost.h —— 只做类型映射，不改协议逻辑。 */
+#include "clhost.h"
+#else
 #include <winsock2.h>
+#endif
 
 /* ── 通道端口（车机主动连手机用）── */
 #define CL_PORT_CMD   7240   /* 控制/握手 */
