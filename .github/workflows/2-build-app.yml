@@ -28,30 +28,43 @@ jobs:
           ls "$HOME/tc"
           test -x "$HOME/tc/cegcc/bin/arm-mingw32ce-gcc"
 
-      - name: 编译
+      # 主程序必须编过 —— 这是本次交付的底线
+      - name: 编译主程序
         run: |
           export PATH="$HOME/tc/cegcc/bin:$PATH"
           make check
-          make
+          make main
+
+      # 探测工具是加分项：链接 -lws2 若失败（工具链没带这个导入库），
+      # 不应拖垮主程序，所以 continue-on-error + 打印真实报错供诊断。
+      - name: 编译网络探测工具（失败不阻塞交付）
+        continue-on-error: true
+        run: |
+          export PATH="$HOME/tc/cegcc/bin:$PATH"
+          echo "── 查找 ws2 导入库 ──"
+          find "$HOME/tc" -name 'libws2*' -o -name 'ws2*def' 2>/dev/null | head
+          make probe
 
       - name: 校验产物是 WinCE ARM PE
         run: |
           python3 - <<'PY'
           import struct, sys, glob
-          f = glob.glob('build/*.exe')
-          if not f: sys.exit('没有产物')
-          f = f[0]
-          d = open(f,'rb').read()
-          pe = struct.unpack_from('<I', d, 0x3c)[0]
-          assert d[pe:pe+4] == b'PE\0\0', '不是 PE 文件'
-          mach, nsec = struct.unpack_from('<HH', d, pe+4)
-          magic = struct.unpack_from('<H', d, pe+24)[0]
-          subsys = struct.unpack_from('<H', d, pe+24+68)[0]
-          print(f'{f}: {len(d)} 字节  Machine=0x{mach:04x}  Magic=0x{magic:x}  节={nsec}  Subsystem={subsys}')
-          assert mach == 0x01c2, f'Machine 应为 0x01c2(ARM)，实际 0x{mach:04x}'
-          assert magic == 0x10b,  f'应为 PE32(0x10b)，实际 0x{magic:x}'
-          assert subsys == 9,     f'Subsystem 应为 9(WINDOWS_CE_GUI)，实际 {subsys}'
-          print('✅ WinCE 6.0 ARM GUI 程序校验通过')
+          files = sorted(glob.glob('build/*.exe'))
+          if not files:
+              sys.exit('没有产物')
+          for f in files:
+              d = open(f, 'rb').read()
+              pe = struct.unpack_from('<I', d, 0x3c)[0]
+              assert d[pe:pe+4] == b'PE\0\0', f'{f} 不是 PE 文件'
+              mach, nsec = struct.unpack_from('<HH', d, pe+4)
+              magic  = struct.unpack_from('<H', d, pe+24)[0]
+              subsys = struct.unpack_from('<H', d, pe+24+68)[0]
+              print(f'{f}: {len(d)} 字节  Machine=0x{mach:04x}  Magic=0x{magic:x}  '
+                    f'节={nsec}  Subsystem={subsys}')
+              assert mach   == 0x01c2, f'{f}: Machine 应为 0x01c2(ARM)，实际 0x{mach:04x}'
+              assert magic  == 0x10b,  f'{f}: 应为 PE32(0x10b)，实际 0x{magic:x}'
+              assert subsys == 9,      f'{f}: Subsystem 应为 9(WINDOWS_CE_GUI)，实际 {subsys}'
+          print(f'✅ {len(files)} 个产物全部通过 WinCE 6.0 ARM GUI 校验')
           PY
 
       - name: 上传产物
