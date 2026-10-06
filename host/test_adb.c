@@ -102,6 +102,48 @@ int main(int argc, char **argv)
         printf("ECHO=none\n");
     }
 
+    /* ── shell 服务：列包名 ── */
+    {
+        static char sh[8192];
+        char pkg[208];
+        int  r2 = adb_run_shell(&a, "pm list packages", sh, (int)sizeof(sh), 6000);
+        printf("SHELL_RESULT=%d\n", r2);
+        printf("SHELL_LEN=%d\n", (int)strlen(sh));
+        if (strstr(sh, "com.baidu.carlife"))
+            printf("SHELL_HAS_CARLIFE=1\n");
+        if (adb_find_carlife_pkg(sh, pkg, (int)sizeof(pkg)) == 0)
+            printf("PKG_FOUND=%s\n", pkg);
+        else
+            printf("PKG_FOUND=none\n");
+    }
+
+    /* ── 包名识别的边界用例（纯字符串处理，不碰设备）──
+     * 重点是那个"看起来像但其实不是"的案例：com.example.facility
+     * 里 c/a/r/l/i/f/e 全都有，子序列式匹配会误判，必须不中。 */
+    {
+        static const struct { const char *in; const char *want; } cases[] = {
+            {"package:com.android.settings\npackage:com.baidu.carlife\n"
+             "package:com.vivo.joviincar\n", "com.baidu.carlife"},
+            {"package:com.android.settings\npackage:com.vivo.joviincar\n",
+             "com.vivo.joviincar"},
+            {"package:com.example.facility\n", ""},          /* 绝不能误判 */
+            {"package:com.android.settings\n", ""},
+            {"", ""},
+        };
+        int k, ncase = (int)(sizeof(cases) / sizeof(cases[0]));
+        for (k = 0; k < ncase; k++) {
+            char got[208];
+            int  r3 = adb_find_carlife_pkg(cases[k].in, got, (int)sizeof(got));
+            if (cases[k].want[0] == 0) {
+                printf("CASE%d=%s\n", k, r3 == 0 ? "误判" : "正确不中");
+            } else {
+                printf("CASE%d=%s\n", k,
+                       (r3 == 0 && strcmp(got, cases[k].want) == 0) ? got
+                                                                    : "错");
+            }
+        }
+    }
+
     fflush(stdout);
     return got > 0 ? 0 : 1;
 }

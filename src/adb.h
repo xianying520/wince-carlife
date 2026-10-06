@@ -76,6 +76,21 @@ int  adb_pump(ADB *a, int timeout_ms);
 /* 从通道缓冲取数据。返回取到的字节数，0 = 暂时没有，<0 = 通道已关。 */
 int  adb_recv(ADB *a, int chan, unsigned char *out, int cap);
 
+/* 用 ADB 的 shell 服务执行一条命令，收集它的输出。
+ * cmd 形如 "pm list packages"。out 里放命令输出（超长会截断）。
+ * 成功返回 0，失败返回负数。
+ *
+ * 为什么要这个：手机上的 CarLife/Jovi InCar 不一定会自己启动 ——
+ * 如果它没在跑，手机本地 7240 端口就没人监听，转发会被直接拒。
+ * 所以车机这边要能主动把手机端拉起来（EasyConnected 是靠往手机推一个
+ * carman 程序并执行来做到这件事的，它的字符串里就有这条记录）。 */
+int  adb_run_shell(ADB *a, const char *cmd, char *out, int cap, int timeout_ms);
+
+/* 从 "pm list packages" 的输出里找出手机端 CarLife/Jovi InCar 的包名。
+ * 找到返回 0 并把包名写进 out；没找到返回 -1。
+ * 单独拎出来是为了能在电脑上直接测（纯字符串处理，不碰设备）。 */
+int  adb_find_carlife_pkg(const char *pm_output, char *out, int cap);
+
 /* 主动关掉一条通道（本地连接断开时调用） */
 int  adb_close_chan(ADB *a, int chan);
 

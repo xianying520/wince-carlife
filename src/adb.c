@@ -439,6 +439,123 @@ int adb_pump(ADB *a, int timeout_ms)
     return n;
 }
 
+/* ── shell 服务 ── */
+int adb_run_shell(ADB *a, const char *cmd, char *out, int cap, int timeout_ms)
+{
+    char service[300];
+    int  id, used = 0, waited = 0;
+    unsigned char buf[4096];
+    int  sl, n;
+
+    if (!a || !cmd || !out || cap <= 0)
+        return -2;
+    out[0] = 0;
+
+    sl = (int)strlen(cmd);
+    if (6 + sl >= (int)sizeof(service))
+        return -2;
+    memcpy(service, "shell:", 6);
+    memcpy(service + 6, cmd, (size_t)sl);
+    service[6 + sl] = 0;
+
+    id = adb_open(a, service);
+    if (id < 0)
+        return id;
+
+    /* 命令的输出会以 WRTE 陆续到达，命令结束时对端发 CLSE。
+     * 这里一边收一边等，直到通道关闭或超时。 */
+    while (waited < timeout_ms) {
+        int r = adb_pump(a, 100);
+        if (r < 0)
+            break;
+        for (;;) {
+            n = adb_recv(a, id, buf, (int)sizeof(buf));
+            if (n <= 0)
+                break;
+            if (used + n < cap - 1) {
+                memcpy(out + used, buf, (size_t)n);
+                used += n;
+                out[used] = 0;
+            }
+        }
+        if (adb_chan_closed(a, id))
+            break;
+        waited += 100;
+    }
+
+    adb_close_chan(a, id);
+    return 0;
+}
+
+/* 大小写不敏感的子串查找。
+ * ⚠ 这里必须是真的子串匹配，不能写成"每个字符都能在包名里找到" ——
+ *   后者是子序列匹配，会把 com.example.facility 这种包名误判成 CarLife
+ *   （c/a/r/l/i/f/e 全都在里面）。这个错我写完就自查出来了，
+ *   并把那个误判案例固定进了测试。 */
+static int ci_contains(const char *hay, const char *needle)
+{
+    int i, j;
+    for (i = 0; hay[i]; i++) {
+        for (j = 0; needle[j]; j++) {
+            char a = hay[i + j], b = needle[j];
+            if (a >= 'A' && a <= 'Z') a += 32;
+            if (b >= 'A' && b <= 'Z') b += 32;
+            if (a != b) break;
+        }
+        if (!needle[j]) return 1;
+    }
+    return 0;
+}
+
+int adb_find_carlife_pkg(const char *pm_output, char *out, int cap)
+{
+    /* 按优先级找：先找 CarLife 本身，再找 vivo 的 Jovi InCar。
+     * pm 的输出形如 "package:com.baidu.carlife"。 */
+    static const char *keys[] = {
+        "com.baidu.carlife",
+        "carlife",
+        "joviincar",
+        "jovi.incar",
+        "incar",
+        "carbit"
+    };
+    const char *p;
+    int k;
+
+    if (!pm_output || !out || cap <= 0)
+        return -1;
+    out[0] = 0;
+
+    for (k = 0; k < (int)(sizeof(keys) / sizeof(keys[0])); k++) {
+        p = pm_output;
+        while ((p = strstr(p, "package:")) != 0) {
+            const char *e;
+            int len;
+            p += 8;
+            e = p;
+            while (*e && *e != '\r' && *e != '\n') e++;
+            len = (int)(e - p);
+
+            /* 在包名里做大小写不敏感的子串匹配 */
+            if (len > 0 && len < 200) {
+                char name[208];
+                if (len >= (int)sizeof(name)) { p = e; continue; }
+                memcpy(name, p, (size_t)len);
+                name[len] = 0;
+
+                if (ci_contains(name, keys[k])) {
+                    if (len >= cap) len = cap - 1;
+                    memcpy(out, name, (size_t)len);
+                    out[len] = 0;
+                    return 0;
+                }
+            }
+            p = e;
+        }
+    }
+    return -1;
+}
+
 /* 主动关掉一条通道（本地 socket 断开时用） */
 int adb_close_chan(ADB *a, int chan)
 {

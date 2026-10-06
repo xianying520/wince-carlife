@@ -44,6 +44,8 @@ static volatile int g_stop;
 static volatile int g_running;
 static char      g_status[256];
 static unsigned long g_tx_bytes, g_rx_bytes;
+static char      g_pkgs[2048];        /* 手机包名清单（截断保留） */
+static int       g_tried_launch;      /* 只尝试拉起一次，避免反复折腾 */
 
 static void set_status(const char *fmt, ...)
 {
@@ -80,6 +82,79 @@ static void conn_push_to_phone(int i, const unsigned char *d, int n)
         return;
     }
     g_tx_bytes += (unsigned long)n;
+}
+
+/* 转发被拒时，尝试把手机端拉起来。
+ * 为什么要做这件事：如果手机上的 CarLife/Jovi InCar 没在运行，手机本地
+ * 7240 端口就没人监听，adbd 会直接拒绝我们的 OPEN。EasyConnected 是靠
+ * 往手机推一个 carman 程序并执行来解决的；我们用 ADB 的 shell 服务更省事：
+ * 先列包名找到 CarLife，再用 monkey 启动它。 */
+int adbp_launch_phone_app(char *detail, int cap)
+{
+    char  buf[8192];
+    char  pkg[208];
+    char  cmd[400];
+    int   r;
+
+    if (detail && cap > 0) detail[0] = 0;
+
+    r = adb_run_shell(&g_adb, "pm list packages", buf, (int)sizeof(buf), 6000);
+    if (r != 0) {
+        if (detail) snprintf(detail, (size_t)cap, "列包名失败（%d）", r);
+        return -1;
+    }
+
+    /* 把清单留一份，现场可以直接看手机里 CarLife 叫什么 */
+    snprintf(g_pkgs, sizeof(g_pkgs) - 1, "%s", buf);
+    g_pkgs[sizeof(g_pkgs) - 1] = 0;
+
+    if (adb_find_carlife_pkg(buf, pkg, (int)sizeof(pkg)) != 0) {
+        if (detail)
+            snprintf(detail, (size_t)cap,
+                     "手机里没找到 CarLife 相关的包（共收到 %d 字节包名清单）",
+                     (int)strlen(buf));
+        return -1;
+    }
+
+    snprintf(cmd, sizeof(cmd),
+             "monkey -p %s -c android.intent.category.LAUNCHER 1", pkg);
+    buf[0] = 0;
+    adb_run_shell(&g_adb, cmd, buf, (int)sizeof(buf), 6000);
+
+    if (detail)
+        snprintf(detail, (size_t)cap, "已尝试启动手机端 %s", pkg);
+    return 0;
+}
+
+const char *adbp_phone_packages(void)
+{
+    return g_pkgs;
+}
+
+/* 打开一条转发；被拒就先试着把手机端拉起来，然后重试一次。
+ * 必须由持有设备的那个线程调用（内部会收发 ADB 数据）。 */
+static int open_with_retry(const char *service)
+{
+    int id = adb_open(&g_adb, service);
+
+    if (id >= 0)
+        return id;
+    if (g_tried_launch)
+        return id;
+    g_tried_launch = 1;
+
+    set_status("手机端没在跑，正在尝试拉起 ...");
+    {
+        char detail[256];
+        if (adbp_launch_phone_app(detail, (int)sizeof(detail)) == 0) {
+            set_status("%s，等它起来 ...", detail);
+            Sleep(2500);                     /* 给它一点启动时间 */
+            id = adb_open(&g_adb, service);
+        } else {
+            set_status("%s", detail);
+        }
+    }
+    return id;
 }
 
 static DWORD WINAPI adbp_thread(LPVOID arg)
@@ -126,12 +201,12 @@ static DWORD WINAPI adbp_thread(LPVOID arg)
                     g_conn[slot].used = 1;
                     g_conn[slot].sock = c;
                     g_conn[slot].svc  = i;
-                    g_conn[slot].chan = adb_open(&g_adb, g_svc[i].service);
+                    g_conn[slot].chan = open_with_retry(g_svc[i].service);
                     if (g_conn[slot].chan < 0) {
                         closesocket(c);
                         g_conn[slot].used = 0;
                         g_conn[slot].sock = INVALID_SOCKET;
-                        set_status("转发 %s 失败（手机拒绝或通道已满）",
+                        set_status("转发 %s 被拒（手机端没在监听这个端口）",
                                    g_svc[i].service);
                     } else {
                         set_status("已转发 %s → 本机 127.0.0.1:%u",

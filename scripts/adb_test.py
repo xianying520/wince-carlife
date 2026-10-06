@@ -150,32 +150,59 @@ def adbd(ready, state):
         send_msg(conn, CNXN, 0x01000000, 256 * 1024,
                  b"device::ro.product.name=mock;ro.product.model=JoviTest;")
 
-        # ── ⑤ 等 OPEN ──
-        m = read_msg(conn)
-        if not m:
-            state["err"] = "没收到 OPEN"
-            return
-        cmd, local0, a1, data = m
-        state["open"] = (cmd, local0, data)
+        # ── ⑤ 通用服务循环：处理 OPEN / WRTE / CLSE ──
+        # 手机端真实的包名清单（用来验证车机能不能自己找到 CarLife）
+        PKG_LIST = (b"package:com.android.settings\n"
+                    b"package:com.example.facility\n"
+                    b"package:com.vivo.joviincar\n"
+                    b"package:com.baidu.carlife\n")
         remote_id = 0x1234
-        state["remote_id"] = remote_id
-        send_msg(conn, OKAY, remote_id, local0)
+        tcp_local = None
+        state["opens"] = []
+        state["shells"] = []
 
-        # ── ⑥ 收 WRTE，回 OKAY，然后原样发回 ──
-        for _ in range(10):
+        for _ in range(40):
             m = read_msg(conn)
             if not m:
                 break
             cmd, a0, a1, data = m
-            if cmd == WRTE:
-                recv_log.append(data)
-                send_msg(conn, OKAY, remote_id, local0)
-                # 把收到的原样发回（arg0=对端的 id，arg1=对方的 id）
-                send_msg(conn, WRTE, remote_id, local0, data)
-                m2 = read_msg(conn)
-                if m2 and m2[0] == OKAY:
-                    state["echo_acked"] = True
             state["last"] = name_of(cmd)
+
+            if cmd == OPEN:
+                svc = data.rstrip(b"\x00").decode("ascii", "replace")
+                state["opens"].append(svc)
+                if svc.startswith("shell:"):
+                    state["shells"].append(svc[6:])
+                    remote_id += 1
+                    send_msg(conn, OKAY, remote_id, a0)
+                    # 把命令输出发过去
+                    send_msg(conn, WRTE, remote_id, a0, PKG_LIST)
+                    m2 = read_msg(conn)
+                    if m2 and m2[0] == OKAY:
+                        state["shell_acked"] = True
+                    send_msg(conn, CLSE, remote_id, a0)
+                elif svc.startswith("tcp:"):
+                    remote_id += 1
+                    tcp_local = a0
+                    state["remote_id"] = remote_id
+                    send_msg(conn, OKAY, remote_id, a0)
+                else:
+                    send_msg(conn, CLSE, 0, a0)
+
+            elif cmd == WRTE:
+                recv_log.append(data)
+                send_msg(conn, OKAY, remote_id, a1)
+                # 只对 tcp 通道做回显，shell 通道不需要
+                if tcp_local is not None and a1 == tcp_local:
+                    send_msg(conn, WRTE, remote_id, a1, data)
+                    m2 = read_msg(conn)
+                    if m2 and m2[0] == OKAY:
+                        state["echo_acked"] = True
+
+            elif cmd == CLSE:
+                send_msg(conn, CLSE, 0, a1)
+                break
+
     except Exception as e:
         state["err"] = f"{type(e).__name__}: {e}"
     finally:
@@ -260,6 +287,33 @@ def main():
     check("协商出的最大载荷合理", vals.get("MAXDATA") == "262144",
           vals.get("MAXDATA", "?"))
     check("被测量程序自身退出码为 0", p.returncode == 0, str(p.returncode))
+
+    # ⑤ shell 服务（用来在手机上拉起 CarLife）
+    opens = state.get("opens", [])
+    check("收到过 shell: 服务请求（能远程执行手机命令）",
+          any(o.startswith("shell:") for o in opens),
+          f"共 {len(opens)} 次 OPEN: {opens[:4]}")
+    check("shell 命令是 pm list packages",
+          any("pm list packages" in o for o in opens),
+          str([o for o in opens if o.startswith("shell:")][:2]))
+    check("对端对 shell 的输出回了 OKAY", state.get("shell_acked") is True)
+    check("被测程序解析出手机包名", vals.get("SHELL_HAS_CARLIFE") == "1",
+          vals.get("PKG_FOUND", "?"))
+    check("★ 从包名清单里正确定位到 CarLife",
+          vals.get("PKG_FOUND") == "com.baidu.carlife",
+          vals.get("PKG_FOUND", "?"))
+
+    # ⑥ 包名识别的边界用例 —— 重点是"看起来像但其实不是"
+    check("边界：优先命中 com.baidu.carlife",
+          vals.get("CASE0") == "com.baidu.carlife", str(vals.get("CASE0")))
+    check("边界：只有 joviincar 时命中它",
+          vals.get("CASE1") == "com.vivo.joviincar", str(vals.get("CASE1")))
+    check("★ 边界：com.example.facility 不能被误判成 CarLife",
+          vals.get("CASE2") == "正确不中", str(vals.get("CASE2")))
+    check("边界：普通包名不误判",
+          vals.get("CASE3") == "正确不中", str(vals.get("CASE3")))
+    check("边界：空输入不误判",
+          vals.get("CASE4") == "正确不中", str(vals.get("CASE4")))
 
     if state.get("err"):
         print(f"\n  ⚠ 假 adbd 侧异常：{state['err']}")
