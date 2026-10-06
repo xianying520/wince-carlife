@@ -143,6 +143,16 @@ int main(int argc, char **argv)
     }
 
     {
+        /* 直接拿同一份清单调一次查找函数，把"是查找错了还是流程没走到"
+         * 这件事一刀切开 */
+        char pk[208];
+        int rf = adb_find_carlife_pkg(adbp_phone_packages(), pk, (int)sizeof(pk));
+        printf("DIRECT_FIND=%d\n", rf);
+        if (rf == 0) printf("DIRECT_PKG=%s\n", pk);
+        printf("LAUNCH_NOTE=%s\n", adbp_last_note());
+    }
+
+    {
         const char *pk = adbp_phone_packages();
         int plen = pk ? (int)strlen(pk) : -1;
         printf("PHONE_PKGS_LEN=%d\n", plen);

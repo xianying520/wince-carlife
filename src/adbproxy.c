@@ -77,6 +77,7 @@ static volatile int g_running;
 static char      g_status[256];
 static unsigned long g_tx_bytes, g_rx_bytes;
 static char      g_pkgs[2048];        /* 手机包名清单（截断保留） */
+static char      g_note[256];         /* 最近一次拉起的说明（现场排查用） */
 static int       g_tried_launch;      /* 只尝试拉起一次，避免反复折腾 */
 
 static void set_status(const char *fmt, ...)
@@ -132,7 +133,8 @@ int adbp_launch_phone_app(char *detail, int cap)
 
     r = adb_run_shell(&g_adb, "pm list packages", buf, (int)sizeof(buf), 6000);
     if (r != 0) {
-        if (detail) snprintf(detail, (size_t)cap, "列包名失败（%d）", r);
+        snprintf(g_note, sizeof(g_note) - 1, "列包名失败（adb_run_shell 返回 %d）", r);
+        if (detail) snprintf(detail, (size_t)cap, "%s", g_note);
         return -1;
     }
 
@@ -141,10 +143,11 @@ int adbp_launch_phone_app(char *detail, int cap)
     g_pkgs[sizeof(g_pkgs) - 1] = 0;
 
     if (adb_find_carlife_pkg(buf, pkg, (int)sizeof(pkg)) != 0) {
-        if (detail)
-            snprintf(detail, (size_t)cap,
-                     "手机里没找到 CarLife 相关的包（共收到 %d 字节包名清单）",
-                     (int)strlen(buf));
+        snprintf(g_note, sizeof(g_note) - 1,
+                 "壳找包名失败: adb_run_shell=%d 收到 %d 字节 首个字节 0x%02X",
+                 r, (int)strlen(buf),
+                 (int)(unsigned char)buf[0]);
+        if (detail) snprintf(detail, (size_t)cap, "%s", g_note);
         return -1;
     }
 
@@ -153,14 +156,20 @@ int adbp_launch_phone_app(char *detail, int cap)
     buf[0] = 0;
     adb_run_shell(&g_adb, cmd, buf, (int)sizeof(buf), 6000);
 
+    snprintf(g_note, sizeof(g_note) - 1, "已尝试启动手机端 %s", pkg);
     if (detail)
-        snprintf(detail, (size_t)cap, "已尝试启动手机端 %s", pkg);
+        snprintf(detail, (size_t)cap, "%s", g_note);
     return 0;
 }
 
 const char *adbp_phone_packages(void)
 {
     return g_pkgs;
+}
+
+const char *adbp_last_note(void)
+{
+    return g_note;
 }
 
 /* 打开一条转发；被拒就先试着把手机端拉起来，然后重试一次。

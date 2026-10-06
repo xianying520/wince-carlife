@@ -42,6 +42,9 @@ int  adbp_launch_phone_app(char *detail, int cap);
 /* 手机包名清单（诊断用，可能在手机上直接看出 CarLife 叫什么） */
 const char *adbp_phone_packages(void);
 
+/* 最近一次"拉起手机端"的结果说明（现场排查用） */
+const char *adbp_last_note(void);
+
 /* 统计：已转发字节数，用于判断"到底有没有数据在流动" */
 void adbp_stats(unsigned long *to_phone, unsigned long *from_phone);
 
