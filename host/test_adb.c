@@ -5,6 +5,7 @@
 #include "clhost.h"
 #include "../src/adb.h"
 
+#include <signal.h>
 #include <sys/socket.h>
 
 static int g_fd = -1;
