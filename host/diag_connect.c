@@ -36,7 +36,7 @@ int main(void)
     printf("  3) connect() = %d  errno=%d (%s)\n", r, errno, strerror(errno));
     printf("     WSAGetLastError() = %d\n", WSAGetLastError());
     printf("     WSAEWOULDBLOCK    = %d\n", WSAEWOULDBLOCK);
-    printf("     两者相等？ %s  ← 这是决定"是否继续等待"的关键判断\n",
+    printf("     两者相等？ %s  ← 这是决定【是否继续等待】的关键判断\n",
            WSAGetLastError() == WSAEWOULDBLOCK ? "是（会继续 select）" : "否（会被当成真失败）");
 
     if (r == SOCKET_ERROR && WSAGetLastError() == WSAEWOULDBLOCK) {
