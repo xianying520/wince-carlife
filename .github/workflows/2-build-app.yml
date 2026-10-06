@@ -82,6 +82,22 @@ jobs:
           echo
           echo "最终选定: 旗标=[$SUBSYS]  核心库=[$LIBS]  网络库=[$NETLIBS]"
 
+      # ── JPEG 解码器验证 ──
+      # 分两步：① 主机上跑通证明算法正确 ② 能为 ARM 编译
+      # 之所以要在主机跑：我们的产物是 ARM WinCE PE，跑不进 CI 的 x86 机器。
+      - name: 验证 JPEG 解码器（主机运行 + 断言像素值）
+        run: |
+          python3 scripts/make_test_jpeg.py /tmp/test_gray.jpg
+          gcc -O2 -Wall -o /tmp/test_nj src/third_party/test_nanojpeg.c
+          /tmp/test_nj /tmp/test_gray.jpg
+
+      - name: 验证 JPEG 解码器能为 ARM 编译
+        run: |
+          export PATH="$HOME/tc/cegcc/bin:$PATH"
+          arm-mingw32ce-gcc -Os -Wall -c src/third_party/nanojpeg.c -o /tmp/nj_arm.o
+          ls -l /tmp/nj_arm.o
+          echo "✅ nanojpeg 能为 ARM/WinCE 编译"
+
       # 主程序必须编过 —— 这是本次交付的底线
       - name: 编译主程序
         run: |
