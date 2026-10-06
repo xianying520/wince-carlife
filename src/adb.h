@@ -70,11 +70,14 @@ int  adb_open(ADB *a, const char *service);
 /* 经由通道发数据。返回 0 成功，<0 失败。 */
 int  adb_send(ADB *a, int chan, const unsigned char *data, int len);
 
-/* 收一轮并分发到各通道。返回处理的包数，<0 传输错。 */
+/* 收一轮并分发到各通道。返回处理的包数（0 = 本轮没数据，正常），<0 传输错。 */
 int  adb_pump(ADB *a, int timeout_ms);
 
 /* 从通道缓冲取数据。返回取到的字节数，0 = 暂时没有，<0 = 通道已关。 */
 int  adb_recv(ADB *a, int chan, unsigned char *out, int cap);
+
+/* 主动关掉一条通道（本地连接断开时调用） */
+int  adb_close_chan(ADB *a, int chan);
 
 /* 通道是否已被对端关闭 */
 int  adb_chan_closed(ADB *a, int chan);

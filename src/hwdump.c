@@ -130,6 +130,11 @@ static int key_exists(const WCHAR *path)
     return 1;
 }
 
+/* has_ci 的实现在本函数之后，先声明一下。
+ * （上一版这里漏了声明，编译器当成隐式声明，随后又把 static 定义
+ *   当成"与前面不一致"而报错 —— 一个前置声明就解决了。） */
+static int has_ci(const WCHAR *hay, const WCHAR *needle);
+
 /* ═══════════════════════════════════════════════════════════════════
  * ADB 能力探测  —— 这是传输层的生死线
  *

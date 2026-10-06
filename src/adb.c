@@ -23,14 +23,20 @@ static unsigned int get_le32(const unsigned char *p)
          | ((unsigned int)p[3] << 24);
 }
 
-/* 一定要读满 len 字节，否则算失败 —— 流式设备一次读不全很正常 */
+/* 一定要读满 len 字节 —— 流式设备一次读不全很正常。
+ * 返回：len = 成功；0 = 超时；-1 = 出错或对端关闭。
+ * ⚠ "超时"必须和"出错"分开：转发器是每 10 毫秒轮询一次的，
+ *   如果超时也返回 -1，它会把"暂时没数据"误判成"设备挂了"，
+ *   然后整个转发就停了 —— 这个坑必须避开。 */
 static int read_full(ADB *a, unsigned char *buf, int len, int timeout_ms)
 {
     int got = 0;
     while (got < len) {
         int r = a->io.read(a->io.ctx, buf + got, len - got, timeout_ms);
-        if (r <= 0)
-            return -1;
+        if (r == 0)
+            return 0;                  /* 超时 */
+        if (r < 0)
+            return -1;                 /* 出错 */
         got += r;
     }
     return got;
@@ -76,8 +82,12 @@ static int recv_msg(ADB *a, unsigned int *cmd, unsigned int *a0,
 {
     unsigned char h[24];
     unsigned int dlen, magic;
+    int rr;
 
-    if (read_full(a, h, 24, timeout_ms) < 0)
+    rr = read_full(a, h, 24, timeout_ms);
+    if (rr == 0)
+        return 0;                      /* 超时 */
+    if (rr < 0)
         return -1;
 
     *cmd  = get_le32(h +  0);
@@ -93,11 +103,14 @@ static int recv_msg(ADB *a, unsigned int *cmd, unsigned int *a0,
     if ((int)dlen > cap)
         return -2;
 
-    if (dlen > 0 && read_full(a, data, (int)dlen, timeout_ms) < 0)
-        return -1;
+    if (dlen > 0) {
+        rr = read_full(a, data, (int)dlen, timeout_ms);
+        if (rr == 0) return 0;
+        if (rr < 0)  return -1;
+    }
 
     *len = (int)dlen;
-    return 0;
+    return 1;                          /* 收到一个完整包 */
 }
 
 /* ── base64：AUTH 的公钥载荷要用 ── */
@@ -205,8 +218,8 @@ static int wait_okay(ADB *a, unsigned int local_id, int timeout_ms)
 
     for (;;) {
         r = recv_msg(a, &cmd, &a0, &a1, buf, (int)sizeof(buf), &len, timeout_ms);
-        if (r < 0)
-            return -1;
+        if (r <= 0)
+            return -1;                 /* 超时也算失败：该来应答却一直不来 */
 
         if (cmd == ADB_OKAY) {
             if (a1 == local_id)
@@ -272,8 +285,7 @@ int adb_connect(ADB *a, ADB_IO io)
 
     for (;;) {
         r = recv_msg(a, &cmd, &a0, &a1, buf, (int)sizeof(buf), &len, 8000);
-        if (r == -1) return -1;
-        if (r == -2) return -2;
+        if (r <= 0) return r == -2 ? -2 : -1;
 
         if (cmd == ADB_CNXN) {
             /* 对端在自己 CNXN 的 arg0 里给出它接受的最大载荷，取小者 */
@@ -337,8 +349,7 @@ int adb_open(ADB *a, const char *service)
 
     for (;;) {
         r = recv_msg(a, &cmd, &a0, &a1, buf, (int)sizeof(buf), &len, 8000);
-        if (r == -1) return -1;
-        if (r == -2) return -2;
+        if (r <= 0) return r == -2 ? -2 : -1;
 
         if (cmd == ADB_OKAY && a1 == (unsigned int)local_id) {
             ADB_CHAN *c = &a->ch[idx];
@@ -410,6 +421,8 @@ int adb_pump(ADB *a, int timeout_ms)
     for (;;) {
         r = recv_msg(a, &cmd, &a0, &a1, buf, (int)a->maxdata + 64, &len,
                      n == 0 ? timeout_ms : 0);
+        if (r == 0)
+            break;                     /* 本轮没数据：正常情况，不是错误 */
         if (r == -1) { free(buf); return n > 0 ? n : -1; }
         if (r == -2) { free(buf); return -2; }
 
@@ -420,16 +433,30 @@ int adb_pump(ADB *a, int timeout_ms)
             }
             n++;
         }
-        /* 最多收一轮就返回，避免长时间占着不放（超时传 0 时立刻返回）*/
-        if (timeout_ms == 0)
-            break;
-        {
-            /* 收到一个包后不再阻塞等下一个 */
-            timeout_ms = 0;
-        }
+        timeout_ms = 0;                /* 收到一个后不再阻塞等下一个 */
     }
     free(buf);
     return n;
+}
+
+/* 主动关掉一条通道（本地 socket 断开时用） */
+int adb_close_chan(ADB *a, int chan)
+{
+    ADB_CHAN *c;
+
+    if (chan < 1 || chan > ADB_MAX_CHAN)
+        return -2;
+    c = &a->ch[chan - 1];
+    if (!c->used)
+        return 0;
+
+    if (!c->closed)
+        send_msg(a, ADB_CLSE, (unsigned int)chan,
+                 (unsigned int)c->remote_id, 0, 0);
+
+    if (c->rx) free(c->rx);
+    memset(c, 0, sizeof(*c));
+    return 0;
 }
 
 int adb_recv(ADB *a, int chan, unsigned char *out, int cap)
