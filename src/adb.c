@@ -280,7 +280,6 @@ int adb_connect(ADB *a, ADB_IO io)
     memset(a, 0, sizeof(*a));
     a->io = io;
     a->maxdata = ADB_MAXDATA_REQ;
-    a->next_id = 1;
 
     r = send_msg(a, ADB_CNXN, ADB_VERSION, ADB_MAXDATA_REQ,
                  (const unsigned char *)banner, (int)(sizeof(banner) - 1));
@@ -337,7 +336,17 @@ int adb_open(ADB *a, const char *service)
     if (idx < 0)
         return -2;
 
-    local_id = (int)a->next_id++;
+    /* ⚠ 本地 id 必须恒等于「槽位下标 + 1」——这是本文件的一条不变量。
+     *   chan_by_local() 就是按下标定位通道的，而对端推来的数据、关闭通知
+     *   全都靠它分发。
+     *   以前这里用 a->next_id++ 单独发号、槽位另找空闲的，两者会脱节：
+     *   只要有一条通道先失败被释放、随后再开新通道，号就跑到前面去了
+     *   （next_id 已经是 2，可空出来的是槽位 0），对端推来的数据于是落在
+     *   一个"没人占用"的槽位上，被当成未知通道【静默丢弃】。
+     *   表象是"转发明明是通的，数据却少了/命令没有输出"，极难查。
+     *   这个坑是主机端到端测试跑出来的：假手机把包名清单紧跟在 OKAY 后发，
+     *   而转发器此前刚被拒过一次通道 —— 两个条件凑齐才显形。 */
+    local_id = idx + 1;
 
     /* ⚠ 先占住通道，再发 OPEN。
      *   手机端服务起来很快，OKAY 和数据常常前后脚到 —— 如果等收到 OKAY

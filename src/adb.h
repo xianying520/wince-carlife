@@ -55,7 +55,6 @@ typedef struct {
 typedef struct {
     ADB_IO        io;
     unsigned int  maxdata;      /* 协商后的最大载荷 */
-    unsigned int  next_id;
     ADB_CHAN      ch[ADB_MAX_CHAN];
     unsigned char tmp[24];      /* 组包头用 */
 } ADB;
