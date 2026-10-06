@@ -80,6 +80,14 @@ jobs:
           echo
           echo "最终选定: 旗标=[$SUBSYS]  核心库=[$LIBS]  网络库=[$NETLIBS]"
 
+      # ── 协议规格核对 ──
+      # 用 Baidu 官方仓库里的 .proto 文件核对我们的编码，
+      # 以及核对消息 ID / 包头长度。之前所有验证都是"代码是否符合我的理解"，
+      # 这一步是拿权威规格来核对代码。
+      - name: 核对协议编码与官方规格
+        run: |
+          python3 scripts/check_proto.py
+
       # ── JPEG 解码器验证 ──
       # 分两步：① 主机上跑通证明算法正确 ② 能为 ARM 编译
       # 之所以要在主机跑：我们的产物是 ARM WinCE PE，跑不进 CI 的 x86 机器。
