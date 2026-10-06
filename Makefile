@@ -62,6 +62,21 @@ $(BUILD)/hwdump.o: src/hwdump.c src/hwdump.h | $(BUILD)
 $(BUILD)/carlife.o: src/carlife.c src/carlife.h | $(BUILD)
 	$(CC) $(CFLAGS) -c $< -o $@
 
+# ── ADB 直连栈 ──
+# rsa 是 ADB 认证要用的签名（自足实现，不依赖任何加密库）。
+# adbproxy 是转发器：把手机端口搬到本机 127.0.0.1，这样 carlife.c 完全不用改。
+$(BUILD)/rsa.o: src/rsa.c src/rsa.h | $(BUILD)
+	$(CC) $(CFLAGS) -c $< -o $@
+
+$(BUILD)/adb.o: src/adb.c src/adb.h src/rsa.h src/adbkey.h | $(BUILD)
+	$(CC) $(CFLAGS) -c $< -o $@
+
+$(BUILD)/adbio_ce.o: src/adbio_ce.c src/adbio_ce.h src/adb.h | $(BUILD)
+	$(CC) $(CFLAGS) -c $< -o $@
+
+$(BUILD)/adbproxy.o: src/adbproxy.c src/adbproxy.h src/adb.h src/adbio_ce.h | $(BUILD)
+	$(CC) $(CFLAGS) -c $< -o $@
+
 $(MAIN_EXE): $(BUILD)/main.o
 	$(CC) $(LDFLAGS) -o $@ $^ $(CORELIB)
 
@@ -81,7 +96,7 @@ viewer: $(VIEWER_EXE)
 	@echo "==> 最终程序: $(VIEWER_EXE)"
 	@ls -l $(VIEWER_EXE)
 
-$(BUILD)/viewer.o: src/viewer.c src/carlife.h src/display.h src/third_party/nanojpeg.h | $(BUILD)
+$(BUILD)/viewer.o: src/viewer.c src/carlife.h src/display.h src/adbproxy.h src/third_party/nanojpeg.h | $(BUILD)
 	$(CC) $(CFLAGS) -c $< -o $@
 
 $(BUILD)/display.o: src/display.c src/display.h | $(BUILD)
@@ -92,7 +107,11 @@ $(BUILD)/display.o: src/display.c src/display.h | $(BUILD)
 $(BUILD)/nanojpeg.o: src/third_party/nanojpeg.c | $(BUILD)
 	$(CC) -Os -w -c $< -o $@
 
-$(VIEWER_EXE): $(BUILD)/viewer.o $(BUILD)/carlife.o $(BUILD)/display.o $(BUILD)/nanojpeg.o
+VIEWER_OBJS := $(BUILD)/viewer.o $(BUILD)/carlife.o $(BUILD)/display.o \
+               $(BUILD)/nanojpeg.o $(BUILD)/adbproxy.o $(BUILD)/adb.o \
+               $(BUILD)/adbio_ce.o $(BUILD)/rsa.o
+
+$(VIEWER_EXE): $(VIEWER_OBJS)
 	$(CC) $(LDFLAGS) -o $@ $^ $(CORELIB) $(NETLIB)
 
 $(BUILD):

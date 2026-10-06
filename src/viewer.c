@@ -13,6 +13,7 @@
 
 #include "carlife.h"
 #include "display.h"
+#include "adbproxy.h"
 #include "third_party/nanojpeg.h"
 
 #define STATUS_H   22          /* 底部状态栏高度 */
@@ -59,6 +60,18 @@ static int      g_frames = 0, g_decoded = 0, g_shown = 0;
 static unsigned long g_t0 = 0;
 static int      g_fps = 0;
 static int      g_miss = 0;                /* 连续收到非 JPEG 帧的次数 */
+
+/* ── 传输路线 ──
+ * 优先走 ADB 端口转发（车机做 ADB 主机 → 手机端口搬到本机 127.0.0.1）。
+ * 这条路不需要 USB 网卡，是 CarLife 有线模式的标准架构。
+ * 万一车机没有 ADB 驱动，再退回 USB 网络共享（手机开共享 → 车机拿 IP）。 */
+static unsigned long    g_ip         = 0;
+static unsigned short   g_port_cmd   = CL_PORT_CMD;
+static unsigned short   g_port_vid   = CL_PORT_VIDEO;
+static unsigned short   g_port_touch = CL_PORT_TOUCH;
+static int              g_route      = 0;   /* 0 未定 / 1 ADB转发 / 2 USB网卡 */
+static int              g_adb_ok     = 0;
+static char             g_adb_reason[256] = "";
 
 /* ── 状态栏 ── */
 static void set_status(const WCHAR *s)
@@ -353,36 +366,81 @@ static LRESULT CALLBACK WndProc(HWND h, UINT m, WPARAM w, LPARAM l)
 }
 
 /* ── 连接手机（找地址 + 握手）── */
-static SOCKET connect_cmd(unsigned long *ip_out)
+/* 决定走哪条路。
+ * 返回 0 表示已确定 g_ip 与三个端口；返回 -1 表示两条路都不通。 */
+static int open_transport(void)
 {
-    unsigned long ips[16];
-    int n, i;
-    SOCKET s;
+    static const char *svc[3] = { "tcp:7240", "tcp:8240", "tcp:9340" };
+    unsigned short ports[3];
+    char reason[256];
 
-    n = cl_candidate_ips(ips, 16);
-    for (i = 0; i < n; i++) {
-        s = cl_connect(ips[i], CL_PORT_CMD, 1200);
-        if (s != INVALID_SOCKET) {
-            *ip_out = ips[i];
-            return s;
+    set_status(L"正在尝试 ADB 直连（USB）...");
+
+    if (adbp_start(svc, 3, ports, reason, (int)sizeof(reason)) == 0) {
+        g_ip         = htonl(0x7F000001UL);      /* 连本机，端口已被转到手机上 */
+        g_port_cmd   = ports[0];
+        g_port_vid   = ports[1];
+        g_port_touch = ports[2];
+        g_route      = 1;
+        g_adb_ok     = 1;
+        return 0;
+    }
+
+    /* ADB 不通 —— 把原因留着，一会儿显示给用户看，这是现场排查的关键信息 */
+    lstrcpynA(g_adb_reason, reason, (int)sizeof(g_adb_reason) - 1);
+
+    /* 退回 USB 网络共享：手机开共享后车机会拿到 IP，扫常见网段 */
+    {
+        unsigned long ips[16];
+        int n = cl_candidate_ips(ips, 16), i;
+        for (i = 0; i < n; i++) {
+            SOCKET s = cl_connect(ips[i], CL_PORT_CMD, 1200);
+            if (s != INVALID_SOCKET) {
+                closesocket(s);
+                g_ip = ips[i];
+                g_route = 2;
+                return 0;
+            }
         }
     }
-    return INVALID_SOCKET;
+    return -1;
+}
+
+static SOCKET connect_cmd(void)
+{
+    return cl_connect(g_ip, (int)g_port_cmd, 2000);
 }
 
 static void run_session(void)
 {
-    unsigned long ip = 0;
     SOCKET cmd;
     int st;
     unsigned long t0 = 0;
 
-    cmd = connect_cmd(&ip);
-    if (cmd == INVALID_SOCKET) {
-        set_status(L"没找到手机（7240 端口都不通）—— 请确认 USB 网络共享已开、Jovi InCar 已启动");
+    if (open_transport() != 0) {
+        WCHAR t[400];
+        WCHAR wreason[256];
+        int i;
+        for (i = 0; i < 255 && g_adb_reason[i]; i++)
+            wreason[i] = (WCHAR)(unsigned char)g_adb_reason[i];
+        wreason[i] = 0;
+        wsprintfW(t, L"两条路都不通。ADB: %s ／ USB网卡: 也没找到手机 "
+                      L"（请确认已开 USB 调试或 USB 网络共享，且 Jovi InCar 已启动）",
+                  wreason);
+        set_status(t);
         return;
     }
-    set_status(L"已连上手机，正在握手 ...");
+
+    cmd = connect_cmd();
+    if (cmd == INVALID_SOCKET) {
+        set_status(g_route == 1
+                   ? L"ADB 转发已就绪，但本机端口连不上（转发线程可能已退出）"
+                   : L"没找到手机（7240 端口都不通）");
+        return;
+    }
+    set_status(g_route == 1
+               ? L"已通过 ADB 直连手机，正在握手 ..."
+               : L"已通过 USB 网络共享连上手机，正在握手 ...");
 
     {
         int match = -1;
@@ -402,7 +460,7 @@ static void run_session(void)
     }
     g_cmd = cmd;
 
-    g_vid = cl_connect(ip, CL_PORT_VIDEO, 2000);
+    g_vid = cl_connect(g_ip, (int)g_port_vid, 2000);
     if (g_vid == INVALID_SOCKET) {
         set_status(L"视频通道 8240 连不上");
         return;
@@ -433,7 +491,7 @@ static void run_session(void)
         set_status(t);
     }
 
-    g_touch = cl_connect(ip, CL_PORT_TOUCH, 1500);
+    g_touch = cl_connect(g_ip, (int)g_port_touch, 1500);
     if (g_touch != INVALID_SOCKET)
         cl_resend_version(cmd);       /* 触摸通道使用前也要求重发 */
 
@@ -534,6 +592,7 @@ int WINAPI WinMain(HINSTANCE hi, HINSTANCE hp, LPWSTR cmdline, int show)
         DispatchMessageW(&msg);
     }
 
+    if (g_adb_ok) adbp_stop();          /* 关掉转发线程并释放 ADB 设备 */
     if (g_cmd   != INVALID_SOCKET) closesocket(g_cmd);
     if (g_vid   != INVALID_SOCKET) closesocket(g_vid);
     if (g_touch != INVALID_SOCKET) closesocket(g_touch);
