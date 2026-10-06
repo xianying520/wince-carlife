@@ -1,0 +1,227 @@
+EasyConnected 解包后可执行文件的字符串证据
+
+来源: easyconnected.exe v4.4.32 (2018-02-07, UPX 3.91 解包)
+
+文件大小 2049536 字节, 唯一字符串 5245 条
+
+用途: 判断车机的 USB 传输能力。原文仅供技术分析。
+
+
+======================================================================
+【ADB设备与驱动】 共 23 条
+======================================================================
+  <%d><%s>,ActivateDevice ADB_Driver fail!
+  <%d><%s>,ActivateDevice ADB_Driver! failed to activate device: %d
+  <%d><%s>,CreateFile ADB1: OK
+  <%d><%s>,CreateFile ADB1: fail
+  ADB1:
+  ADBT.dll
+  ADB_Driver.dll
+  Drivers\USB\ClientDrivers\ADB_Class
+  Drivers\USB\ClientDrivers\ADB_Driver
+  Drivers\USB\ClientDrivers\Adb
+  Drivers\USB\LoadClients\%d\0\Default
+  Drivers\USB\LoadClients\%d\0\Default\ADB_Driver
+  Drivers\USB\LoadClients\%d\Default
+  Drivers\USB\LoadClients\1256\0\Default
+  Drivers\USB\LoadClients\4817\0\Default
+  Drivers\USB\LoadClients\6610\0\Default
+  Drivers\USB\LoadClients\Default\0_0_0
+  Drivers\USB\LoadClients\Default\Default\255_66_1
+  Drivers\USB\LoadClients\Default\Default\255_66_1\
+  Drivers\USB\LoadClients\Default\Default\255_66_1\ADB_Driver
+  Drivers\USB\LoadClients\Default\Default\Default
+  Drivers\USB\LoadClients\Default\Default\Default\ADBT
+  tADB1:
+
+======================================================================
+【ADB协议与转发】 共 20 条
+======================================================================
+  <%d><%s>,Adb Forward: %d->%d started.
+  <%d><%s>,Begin of Adb Proxy.
+  <%d><%s>,End of Adb Proxy...
+  <%d><%s>,forward remote port is same ,local port is diffrent,reforward
+  <%d><%s>,forward size >MaxSize:%d
+  <%d><%s>,the forward remotePort:%d,localPort:%d,is forwarded
+  AUTH
+  AdbForwardServer::CreateListenSocket
+  AdbForwardServer::StartAdbForward
+  CLSE
+  ForwardEntiity::AcceptorThread
+  ForwardEntiity::CreateListenSocket
+  ForwardEntiity::Local2RemoteLoop
+  ForwardEntiity::ProxyThread
+  ForwardEntiity::Remote2LocalLoop
+  ForwardEntiity::StartForward
+  JpegRender::StartAdbForward
+  OKAY
+  auth
+  forward
+
+======================================================================
+【镜像与JPEG】 共 110 条
+======================================================================
+  <%d><%s>,******************StopMirror******************
+  <%d><%s>,***************PubMirror***************
+  <%d><%s>,=======Start Android Inner Mirror Screen========
+  <%d><%s>,=======Start Android System Mirror Screen========
+  <%d><%s>,ENC_JPEG
+  <%d><%s>,JpegReader WM_DESTROY ...
+  <%d><%s>,JpegReader WM_DESTROY end
+  <%d><%s>,JpegReader WM_DESTROY start
+  <%d><%s>,JpegRender()
+  <%d><%s>,Mirror service exist!!!!!!!!!!!!!!!!!!!!!!
+  <%d><%s>,MirrorService StartMirror
+  <%d><%s>,OnCopyData MT_MIRROR_PLAY_DAAR url %s
+  <%d><%s>,OnCopyData MT_MIRROR_STOP
+  <%d><%s>,OnMirrorNotify MIRROR2U_EXIST
+  <%d><%s>,OnMirrorNotify MIRROR2U_KEEPALIVE
+  <%d><%s>,OnMirrorNotify MIRROR2U_LOCKSCREENSTATUS
+  <%d><%s>,OnMirrorResult ERROR_EC_SUCCESS
+  <%d><%s>,PubMirror exist!!!!!!!!!!!!!!!!!!!!!!
+  <%d><%s>,WM_WINDOWPOSCHANGED JpegRender Hide
+  <%d><%s>,WM_WINDOWPOSCHANGED JpegRender Show
+  <%d><%s>,~JPEGRENDER end
+  <%d><%s>,~JpegRender()
+  <%d><%s>,~MirrorService 
+  Bogus JPEG colorspace
+  Buffer passed to JPEG library is too small
+  Caution: quantization tables are too coarse for baseline JPEG
+  Copyright (C) 1991-2015 The libjpeg-turbo Project and many others
+  Corrupt JPEG data: %u extraneous bytes before marker 0x%02x
+  Corrupt JPEG data: bad Huffman code
+  Corrupt JPEG data: bad arithmetic code
+  Corrupt JPEG data: found marker 0x%02x instead of RST%d
+  Corrupt JPEG data: premature end of data segment
+  EC-Mirror-%s
+  Empty JPEG image (DNL not supported)
+  IGui::OnMirrorNotify
+  IGui::OnMirrorResult
+  IGui::PubMirror
+  IGui::StopMirror
+  IOSMIRROR_HELP
+  Improper call to JPEG library in state %d
+  Invalid JPEG file structure: SOS before SOF
+  Invalid JPEG file structure: missing SOS marker
+  Invalid JPEG file structure: two SOF markers
+  Invalid JPEG file structure: two SOI markers
+  Invalid SOS parameters for sequential JPEG
+  JFIF extension marker: JPEG-compressed thumbnail image, length %u
+  JPEG datastream contains no image
+  JPEG parameter struct mismatch: library thinks size is %u, caller expects %u
+  JpegRender::CarManLimitRoutine
+  JpegRender::CarManRoutineEx
+  JpegRender::ClickSys
+  JpegRender::HandleMsg
+  JpegRender::IsNotShouldSendLimit
+  JpegRender::JpegRender
+  JpegRender::KeepAliveRoutine
+  JpegRender::NetRoutine
+  JpegRender::OnCopyData
+  JpegRender::OnKeepAliveRoutine
+  JpegRender::OnLDown
+  JpegRender::OnLUp
+
+======================================================================
+【端口与本地回环】 共 36 条
+======================================================================
+  .?AVCNotSupportedException@@
+  127.0.0.1
+  5037EA654196CFF0CD82B2C14A2FCF2E3FF8775285B545722F03EACDB74B
+  <%d><%s>,Android Dual Screen: re_connect 127.0.0.1 port: %d fail
+  <%d><%s>,Android Inner Dual Screen: re_connect 127.0.0.1 port: %d fail. Take this info to larry
+  <%d><%s>,forward remote port is same ,local port is diffrent,reforward
+  <%d><%s>,ip %s, port %d
+  <%d><%s>,port_ctrl=%s
+  <%d><%s>,port_data=%s
+  <%d><%s>,re_connect easyserver port fail
+  <%d><%s>,re_connect rv ctrl port fail
+  <%d><%s>,remote read failed for transport
+  <%d><%s>,the forward remotePort:%d,localPort:%d,is forwarded
+  <%d><%s>,usb_write(): failed for transport (%d bytes tran)
+  <UNSUPPORTED>
+  <unsupported>
+  Backing store not supported
+  CNotSupportedException
+  DSO support routines
+  EdiPartyName:<unsupported>
+  Empty JPEG image (DNL not supported)
+  IDCT output block size %d not supported
+  Maximum supported image dimension is %u pixels
+  Smoothing not supported with nonstandard sampling ratios
+  Unsupported JPEG data precision %d
+  Unsupported JPEG process: SOF type 0x%02x
+  Unsupported color conversion request
+  Unsupported marker type 0x%02x
+  X400Name:<unsupported>
+  You need to read the OpenSSL FAQ, http://www.openssl.org/support/faq.html
+  export LD_LIBRARY_PATH=$LD_LIBRARY_PATH:/data/local/tmp;
+  id-it-unsupportedOIDs
+  othername:<unsupported>
+  unsupported bit depth
+  unsupported data layout
+  unsupported format
+
+======================================================================
+【密码学(ADB认证要用)】 共 342 条
+======================================================================
+  %s(%d): OpenSSL internal error, assertion failed: %s
+  -----BEGIN RSA PRIVATE KEY-----
+  -----END RSA PRIVATE KEY-----
+  59827clubs60191iquest68250rsaquo
+  <%d><%s>,OpenSSL error
+  AES-128-CBC
+  AES-128-CFB
+  AES-128-CFB1
+  AES-128-CFB8
+  AES-128-ECB
+  AES-128-OFB
+  AES-192-CBC
+  AES-192-CFB
+  AES-192-CFB1
+  AES-192-CFB8
+  AES-192-ECB
+  AES-192-OFB
+  AES-256-CBC
+  AES-256-CFB
+  AES-256-CFB1
+  AES-256-CFB8
+  AES-256-ECB
+  AES-256-OFB
+  ASN.1 part of OpenSSL 0.9.8g 19 Oct 2007
+  ASN1_UNIVERSALSTRING
+  Big Number part of OpenSSL 0.9.8g 19 Oct 2007
+  CERTIFICATE
+  CERTIFICATE REQUEST
+  CERTIFICATEPOLICIES
+  CONF part of OpenSSL 0.9.8g 19 Oct 2007
+  CONF_def part of OpenSSL 0.9.8g 19 Oct 2007
+  Certificate Hold
+  Certificate Sign
+  DSA part of OpenSSL 0.9.8g 19 Oct 2007
+  DSA-SHA
+  DSA-SHA1
+  DSA-SHA1-old
+  Diffie-Hellman part of OpenSSL 0.9.8g 19 Oct 2007
+  DlOpenSSL default user interface
+  EC part of OpenSSL 0.9.8g 19 Oct 2007
+  ECDSA part of OpenSSL 0.9.8g 19 Oct 2007
+  EVP part of OpenSSL 0.9.8g 19 Oct 2007
+  Ec:\openssl-0.9.8g\crypto\evp\digest.c
+  Eric Young's PKCS#1 RSA
+  LOpenSSL: FATAL
+  MD5 part of OpenSSL 0.9.8g 19 Oct 2007
+  MD5-SHA1
+  Microsoft Universal Principal Name
+  NEW CERTIFICATE REQUEST
+  NO X509_NAME
+  Netscape Certificate Extension
+  Netscape Certificate Sequence
+  OpenSSL 'win32' shared library method
+  OpenSSL DH Method
+  OpenSSL DSA method
+  OpenSSL ECDSA method
+  OpenSSL default
+  PBE-SHA1-2DES
+  PBE-SHA1-3DES
+  PBE-SHA1-DES
