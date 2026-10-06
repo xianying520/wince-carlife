@@ -136,6 +136,10 @@ jobs:
           # 链接一遍，确认符号齐全（用 viewer 的对象一起链，能提前发现缺函数）
           ls -l /tmp/rsa.o /tmp/adb.o /tmp/adbio_ce.o /tmp/adbproxy.o
 
+      - name: 验证 ADB 端口转发器（真实转发器代码 + 假手机，端到端）
+        run: |
+          python3 scripts/adbproxy_test.py
+
       - name: 验证 JPEG 解码器（主机运行 + 断言像素值）
         run: |
           python3 scripts/make_test_jpeg.py /tmp/test_gray.jpg

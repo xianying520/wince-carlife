@@ -8,9 +8,27 @@
  */
 #include "adbproxy.h"
 #include "adb.h"
-#include "adbio_ce.h"
 
+/* ── 平台层 ──
+ * 车机上用 Windows CE 的线程与设备 API；电脑上换成等价垫片。
+ * 业务逻辑（下面那个 select 循环）两边完全一样，不做条件编译，
+ * 这样主机上跑通就等于车机上跑通。 */
+#ifdef ADBP_HOST_TEST
+#include "clhost.h"
+#include "hostplat.h"
+#define ADBP_SLEEP(ms)   usleep((unsigned)(ms) * 1000)
+#define ADBP_THREAD_RET  void *
+#define ADBP_THREAD_ARG  void *
+#define ADBP_API
+#else
 #include <windows.h>
+#include "adbio_ce.h"
+#define ADBP_SLEEP(ms)   Sleep(ms)
+#define ADBP_THREAD_RET  DWORD
+#define ADBP_THREAD_ARG  LPVOID
+#define ADBP_API         WINAPI
+#endif
+
 #include <string.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -38,8 +56,22 @@ static ADBP_SVC  g_svc[ADBP_MAX_SVC];
 static int       g_nsvc;
 static ADBP_CONN g_conn[ADBP_MAX_CONN];
 static ADB       g_adb;
+#ifdef ADBP_HOST_TEST
+static HANDLE    g_thread;
+#else
 static HANDLE    g_thread;
 static DWORD     g_tid;
+#endif
+static int       g_own_device;        /* 设备是不是本模块打开的（决定要不要关） */
+
+/* 关设备：主机测试下没有设备可关，包一层以免引用到 WinCE 的符号。 */
+#ifdef ADBP_HOST_TEST
+#define ADBP_CLOSE_DEVICE()   do { g_own_device = 0; } while (0)
+#else
+#define ADBP_CLOSE_DEVICE()   do {                                     \
+        ADBP_CLOSE_DEVICE();      \
+    } while (0)
+#endif
 static volatile int g_stop;
 static volatile int g_running;
 static char      g_status[256];
@@ -148,7 +180,7 @@ static int open_with_retry(const char *service)
         char detail[256];
         if (adbp_launch_phone_app(detail, (int)sizeof(detail)) == 0) {
             set_status("%s，等它起来 ...", detail);
-            Sleep(2500);                     /* 给它一点启动时间 */
+            ADBP_SLEEP(2500);                /* 给它一点启动时间 */
             id = adb_open(&g_adb, service);
         } else {
             set_status("%s", detail);
@@ -157,7 +189,7 @@ static int open_with_retry(const char *service)
     return id;
 }
 
-static DWORD WINAPI adbp_thread(LPVOID arg)
+static ADBP_THREAD_RET ADBP_API adbp_thread(ADBP_THREAD_ARG arg)
 {
     unsigned char *buf = (unsigned char *)malloc(ADBP_BUF);
     (void)arg;
@@ -262,13 +294,14 @@ static DWORD WINAPI adbp_thread(LPVOID arg)
     return 0;
 }
 
-int adbp_start(const char * const *services, int n_services,
-               unsigned short *local_ports, char *reason, int reason_cap)
+/* 核心：用给定的设备 I/O 启动转发。
+ * 单独拿出来是为了能在电脑上用 socket 假装成设备，端到端验证转发逻辑。 */
+int adbp_start_with_io(ADB_IO io, const char * const *services, int n_services,
+                       unsigned short *local_ports, char *reason, int reason_cap)
 {
+#ifndef ADBP_HOST_TEST
     WSADATA wsa;
-    ADB_IO  io;
-    WCHAR   devname[64];
-    char    devreason[256];
+#endif
     int     i;
 
     if (reason && reason_cap > 0) reason[0] = 0;
@@ -287,26 +320,18 @@ int adbp_start(const char * const *services, int n_services,
         g_svc[i].lsn  = INVALID_SOCKET;
     }
 
+#ifndef ADBP_HOST_TEST
     if (WSAStartup(MAKEWORD(2, 2), &wsa) != 0) {
         if (reason) snprintf(reason, (size_t)reason_cap, "Winsock 初始化失败");
         return -1;
     }
+#endif
     if (n_services <= 0 || n_services > ADBP_MAX_SVC) {
         if (reason) snprintf(reason, (size_t)reason_cap, "服务数量不对");
         return -2;
     }
 
-    /* ① 打开 ADB 设备 */
-    if (adbio_ce_open(devname, 64, devreason, (int)sizeof(devreason)) != 0) {
-        if (reason) {
-            snprintf(reason, (size_t)reason_cap, "%s", devreason);
-            reason[reason_cap - 1] = 0;
-        }
-        return -3;
-    }
-
-    /* ② 连上并完成认证 */
-    io = adbio_ce_io();
+    /* ① 连上并完成认证 */
     {
         int r = adb_connect(&g_adb, io);
         if (r != 0) {
@@ -317,10 +342,10 @@ int adbp_start(const char * const *services, int n_services,
                              "请在手机上点「允许 USB 调试」后重试");
                 else
                     snprintf(reason, (size_t)reason_cap,
-                             "ADB 认证失败（错误 %d，设备 %ls）", r, devname);
+                             "ADB 认证失败（错误 %d）", r);
                 reason[reason_cap - 1] = 0;
             }
-            adbio_ce_close();
+            ADBP_CLOSE_DEVICE();
             return -4;
         }
     }
@@ -372,7 +397,11 @@ int adbp_start(const char * const *services, int n_services,
     }
 
     /* ④ 起线程 */
+#ifdef ADBP_HOST_TEST
+    g_thread = hostplat_spawn(adbp_thread, NULL);
+#else
     g_thread = CreateThread(NULL, 0, adbp_thread, NULL, 0, &g_tid);
+#endif
     if (!g_thread) {
         if (reason) snprintf(reason, (size_t)reason_cap, "建线程失败");
         goto fail;
@@ -389,10 +418,33 @@ fail:
         }
         g_svc[i].used = 0;
     }
-    adbio_ce_close();
+    ADBP_CLOSE_DEVICE();
     g_nsvc = 0;
     return -5;
 }
+
+/* 车机入口：打开 ADB 设备，然后交给核心。 */
+#ifndef ADBP_HOST_TEST
+int adbp_start(const char * const *services, int n_services,
+               unsigned short *local_ports, char *reason, int reason_cap)
+{
+    WCHAR devname[64];
+    char  devreason[256];
+
+    if (reason && reason_cap > 0) reason[0] = 0;
+
+    if (adbio_ce_open(devname, 64, devreason, (int)sizeof(devreason)) != 0) {
+        if (reason) {
+            snprintf(reason, (size_t)reason_cap, "%s", devreason);
+            reason[reason_cap - 1] = 0;
+        }
+        return -3;
+    }
+    g_own_device = 1;
+    return adbp_start_with_io(adbio_ce_io(), services, n_services,
+                              local_ports, reason, reason_cap);
+}
+#endif
 
 void adbp_stop(void)
 {
@@ -413,7 +465,7 @@ void adbp_stop(void)
         }
         g_svc[i].used = 0;
     }
-    adbio_ce_close();
+    ADBP_CLOSE_DEVICE();
     g_nsvc = 0;
     g_running = 0;
 }

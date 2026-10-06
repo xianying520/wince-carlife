@@ -10,12 +10,20 @@
 #ifndef ADBPROXY_H
 #define ADBPROXY_H
 
+#include "adb.h"
+
 /* 启动转发。services 形如 {"tcp:7240","tcp:8240","tcp:9340"}。
  * 本地监听端口由系统分配，写回 local_ports。
  * 成功返回 0；失败返回负数，reason 里给出可读原因（可直接显示给用户）。 */
 int  adbp_start(const char * const *services, int n_services,
                 unsigned short *local_ports,
                 char *reason, int reason_cap);
+
+/* 用外部提供的设备 I/O 启动转发（主机端到端测试用）。
+ * adbp_start 内部会先打开 ADB 设备再调它。 */
+int  adbp_start_with_io(ADB_IO io, const char * const *services, int n_services,
+                        unsigned short *local_ports,
+                        char *reason, int reason_cap);
 
 /* 停止转发并释放设备 */
 void adbp_stop(void);
