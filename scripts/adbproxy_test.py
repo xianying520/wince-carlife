@@ -285,7 +285,7 @@ def main():
         for f in fails:
             print(f"     · {f}")
         return 1
-    print("✅ 转发器端到端验证通过（含"手机端没跑时自动拉起并重试"）")
+    print("✅ 转发器端到端验证通过（含【手机端没跑时自动拉起并重试】这条分支）")
     return 0
 
 
