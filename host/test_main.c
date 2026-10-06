@@ -28,8 +28,33 @@ int main(int argc, char **argv)
 
     printf("══ 用真实协议代码连假手机 ══\n");
 
+    /* ⓪ 诊断：先用最朴素的方式连一次。
+     * 这样能立刻分清是"兼容层(shim)的问题"还是"协议代码的问题" ——
+     * 否则只能对着一句"连不上"猜。 */
+    {
+        int fd;
+        struct sockaddr_in sa;
+        int r2;
+        fd = socket(AF_INET, SOCK_STREAM, 0);
+        printf("     [诊断] socket() = %d\n", fd);
+        memset(&sa, 0, sizeof(sa));
+        sa.sin_family      = AF_INET;
+        sa.sin_port        = htons((unsigned short)CL_PORT_CMD);
+        sa.sin_addr.s_addr = ip;
+        errno = 0;
+        r2 = connect(fd, (struct sockaddr *)&sa, sizeof(sa));
+        printf("     [诊断] 朴素阻塞 connect() = %d  errno=%d (%s)\n",
+               r2, errno, strerror(errno));
+        if (fd >= 0)
+            close(fd);
+        printf("     [诊断] sizeof(long)=%zu  ip=0x%08lx\n", sizeof(long), ip);
+    }
+
     /* ① 控制通道 + 握手 */
+    errno = 0;
     cmd = cl_connect(ip, CL_PORT_CMD, 2000);
+    printf("     [诊断] cl_connect 返回 %d  errno=%d (%s)\n",
+           cmd, errno, strerror(errno));
     ck("连上控制通道 7240", cmd != INVALID_SOCKET);
     if (cmd == INVALID_SOCKET)
         return 1;
