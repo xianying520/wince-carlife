@@ -198,8 +198,14 @@ def adbd(ready, state):
                         state["echo_acked"] = True
 
             elif cmd == CLSE:
-                send_msg(conn, CLSE, 0, a1)
-                break
+                # NOTE: a CLSE is NOT the end of the session. One ADB
+                # connection carries many channels, and closing one leaves the
+                # rest untouched. Breaking out here made the mock quit before
+                # the second shell command (the one that launches CarLife)
+                # could ever be processed -- the test then blamed production
+                # code for something production did correctly.
+                state["clse_from_host"] = state.get("clse_from_host", 0) + 1
+                # No reply needed: a CLSE from the peer already is the close.
     except Exception as e:                                   # noqa: BLE001
         state["err"] = f"{type(e).__name__}: {e}"
     finally:

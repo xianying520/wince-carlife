@@ -201,6 +201,11 @@ static int handle_msg(ADB *a, unsigned int cmd, unsigned int a0,
     }
     case ADB_CLSE: {
         ADB_CHAN *c = chan_by_local(a, a1);
+        if (c && c->closed) {
+            /* 这条已经关过了，说明收到的是对方的"关闭确认"，不能再回一个 ——
+             * 两边都无脑回确认会变成互相来回打不完的 CLSE。 */
+            return 0;
+        }
         if (c)
             c->closed = 1;
         send_msg(a, ADB_CLSE, a0, a1, 0, 0);
