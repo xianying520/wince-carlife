@@ -204,18 +204,34 @@ static ADBP_THREAD_RET ADBP_API adbp_thread(ADBP_THREAD_ARG arg)
     while (!g_stop) {
         fd_set rf;
         struct timeval tv;
-        int    i, r;
+        int    i, r, maxfd = -1;
 
         /* ① 先看本地有没有数据要发往手机 */
         FD_ZERO(&rf);
-        for (i = 0; i < g_nsvc; i++)
-            if (g_svc[i].lsn != INVALID_SOCKET) FD_SET(g_svc[i].lsn, &rf);
-        for (i = 0; i < ADBP_MAX_CONN; i++)
-            if (g_conn[i].used) FD_SET(g_conn[i].sock, &rf);
+        for (i = 0; i < g_nsvc; i++) {
+            if (g_svc[i].lsn == INVALID_SOCKET) continue;
+            FD_SET(g_svc[i].lsn, &rf);
+            if ((int)g_svc[i].lsn > maxfd) maxfd = (int)g_svc[i].lsn;
+        }
+        for (i = 0; i < ADBP_MAX_CONN; i++) {
+            if (!g_conn[i].used) continue;
+            FD_SET(g_conn[i].sock, &rf);
+            if ((int)g_conn[i].sock > maxfd) maxfd = (int)g_conn[i].sock;
+        }
+        if (maxfd < 0) {
+            ADBP_SLEEP(10);
+            continue;
+        }
 
+        /* ⚠ nfds 必须传「最大 fd + 1」，不能图省事写 0。
+         *   WinSock 会忽略这个参数，但 POSIX 是靠它决定要检查哪些位的 ——
+         *   传 0 等于「一个 fd 都不用看」，select 会立刻返回且什么都不报告，
+         *   于是新连接永远 accept 不到（表象是客户端 connect 成功但没反应，
+         *   因为内核完成了握手、应用层却没接手）。
+         *   同样的坑在 carlife.c 里也踩过一次，两处都已修。 */
         tv.tv_sec = 0;
         tv.tv_usec = 10000;                    /* 10 毫秒一轮 */
-        r = select(0, &rf, NULL, NULL, &tv);
+        r = select(maxfd + 1, &rf, NULL, NULL, &tv);
 
         if (r > 0) {
             /* 新连接 */
