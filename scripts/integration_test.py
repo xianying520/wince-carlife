@@ -228,15 +228,18 @@ def touch_handler(conn):
 # 假 adbd —— 真的 ADB 协议 + tcp 端口转发
 # ══════════════════════════════════════════════════════════════
 class FakeAdbd:
-    def __init__(self, conn):
+    def __init__(self, conn, state):
         self.conn = conn
+        self.state = state
         self.chans = {}          # their_local_id -> {"sock":..., "our_id":...}
-        self.opens = []
         self.err = None
+        # ⚠ 通道一开就记进 state，不要等 run() 返回再一起写。
+        #   run() 要等连接断开才返回，测试却是在被测进程退出后立刻读 state——
+        #   差一点点就读到空的（这个竞态真的发生过，表现成"三条通道一条都没开"）。
 
     def handle_open(self, a0, data):
         svc = data.rstrip(b"\x00").decode("ascii", "replace")
-        self.opens.append(svc)
+        self.state.setdefault("opens", []).append(svc)
         if svc in PHONE_PORTS:
             try:
                 s = socket.create_connection((HOST, PHONE_PORTS[svc]), timeout=5)
@@ -350,9 +353,8 @@ def adbd_server(ready, state):
         send_msg(conn, CNXN, 0x01000000, 256 * 1024, b"device::model=JoviTest;")
         conn.settimeout(None)
 
-        a = FakeAdbd(conn)
+        a = FakeAdbd(conn, state)
         a.run()
-        state["opens"] = a.opens
         if a.err:
             state["err"] = a.err
     except Exception as e:                                   # noqa: BLE001
