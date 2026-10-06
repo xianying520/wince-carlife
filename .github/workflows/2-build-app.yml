@@ -28,12 +28,32 @@ jobs:
           ls "$HOME/tc"
           test -x "$HOME/tc/cegcc/bin/arm-mingw32ce-gcc"
 
+      # 先探测哪种链接方式能产出合法 WinCE PE，写进环境变量供后面用。
+      # 这样即使工具链换版本、旗标变了，构建也能自愈。
+      - name: 探测可用的链接方式
+        run: |
+          export PATH="$HOME/tc/cegcc/bin:$PATH"
+          printf '#include <windows.h>\nint WINAPI WinMain(HINSTANCE a,HINSTANCE b,LPWSTR c,int d){return 0;}\n' > /tmp/probe.c
+          for F in "-Wl,--subsystem,windowsce" "" "-Wl,--subsystem,9" "-mwindows"; do
+            rm -f /tmp/probe.exe
+            if arm-mingw32ce-gcc $F -o /tmp/probe.exe /tmp/probe.c -lcoredll >/dev/null 2>&1 \
+               && python3 scripts/checkpe.py /tmp/probe.exe --quiet; then
+              echo "选定链接旗标: [$F]"
+              echo "WINCE_LDFLAGS=$F" >> "$GITHUB_ENV"
+              python3 scripts/checkpe.py /tmp/probe.exe
+              exit 0
+            fi
+            echo "  ✗ [$F] 不可用"
+          done
+          echo "❌ 没有任何链接方式能产出合法 WinCE PE"
+          exit 1
+
       # 主程序必须编过 —— 这是本次交付的底线
       - name: 编译主程序
         run: |
           export PATH="$HOME/tc/cegcc/bin:$PATH"
           make check
-          make main
+          make main LDFLAGS="$WINCE_LDFLAGS -s"
 
       # 探测工具是加分项：链接 -lws2 若失败（工具链没带这个导入库），
       # 不应拖垮主程序，所以 continue-on-error + 打印真实报错供诊断。
@@ -43,14 +63,14 @@ jobs:
           export PATH="$HOME/tc/cegcc/bin:$PATH"
           echo "── 查找 ws2 导入库 ──"
           find "$HOME/tc" -name 'libws2*' -o -name 'ws2*def' 2>/dev/null | head
-          make probe
+          make probe LDFLAGS="$WINCE_LDFLAGS -s"
 
       # 客户端同样属于加分项，但它的编译错误最有诊断价值（协议层首次编译）
       - name: 编译主客户端（失败不阻塞交付）
         continue-on-error: true
         run: |
           export PATH="$HOME/tc/cegcc/bin:$PATH"
-          make client
+          make client LDFLAGS="$WINCE_LDFLAGS -s"
 
       - name: 校验产物是 WinCE ARM PE
         run: |

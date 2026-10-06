@@ -9,8 +9,12 @@ CC     := $(CROSS)gcc
 BUILD  := build
 
 CFLAGS  := -Os -Wall -DUNICODE -D_UNICODE -Isrc
-# -mwindows : PE 子系统 = WINDOWS_CE_GUI（车机只认 GUI 子系统）
-LDFLAGS := -mwindows -s
+
+# PE 子系统必须是 9(WINDOWS_CE_GUI)，否则车机不认。
+# ⚠ 实测教训：CeGCC(ENLYZE 9.3.0) 不认桌面 MinGW 的 -mwindows
+#   （报 "unrecognized command line option"）。
+# CI 会先探测出可用组合，再通过 make LDFLAGS=... 覆盖这里。
+LDFLAGS ?= -Wl,--subsystem,windowsce -s
 
 MAIN_EXE   := $(BUILD)/WinCE-CarLifeHU.exe
 PROBE_EXE  := $(BUILD)/WinCE-NetProbe.exe

@@ -69,16 +69,46 @@ jobs:
           rm -rf "$OUT"; mkdir -p "$OUT"; cd "$OUT"
           "$SRC/build.sh" --prefix="$PREFIX" --target=arm-mingw32ce
 
-      - name: 自检工具链
+      # 自检改为「探测式且不阻塞」：
+      # CeGCC 不认桌面 MinGW 的 -mwindows，必须找出正确的子系统设法。
+      # 这一步只报告，绝不 return 非零 —— 工具链编出来了就必须打包发布，
+      # 否则前面 15 分钟的编译白费（这是上一次失败的教训）。
+      - name: 自检工具链（探测正确链接方式，只报告不阻塞）
         run: |
+          set +e
           test -x "$PREFIX/bin/arm-mingw32ce-gcc" || { echo "编译器不存在"; ls -R "$PREFIX" | head -50; exit 1; }
           export PATH="$PREFIX/bin:$PATH"
+          echo "── 编译器 ──"
           arm-mingw32ce-gcc --version | head -1
-          echo "── 编译一个最小程序验证 ──"
+          echo
+          echo "── 工具链自带的导入库（找 coredll / ws2）──"
+          find "$PREFIX" -name 'libcoredll*' -o -name 'libws2*' -o -name 'libcrtdll*' 2>/dev/null | head -20
+          echo
+          echo "── 头文件目录 ──"
+          ls -d "$PREFIX"/arm-mingw32ce/include 2>/dev/null && ls "$PREFIX"/arm-mingw32ce/include | head -15
+          echo
           printf '#include <windows.h>\nint WINAPI WinMain(HINSTANCE a,HINSTANCE b,LPWSTR c,int d){return 0;}\n' > /tmp/t.c
-          arm-mingw32ce-gcc -mwindows -o /tmp/t.exe /tmp/t.c
-          ls -l /tmp/t.exe
-          file /tmp/t.exe || true
+          echo "── 逐个试链接方式，并检查产出的 PE 子系统是否 = 9(WINDOWS_CE_GUI) ──"
+          n=0
+          for FLAGS in "" "-Wl,--subsystem,windowsce" "-Wl,--subsystem,9" "-mwin32" "-mno-cygwin"; do
+            n=$((n+1))
+            echo "===== 方式$n  旗标: [$FLAGS] ====="
+            rm -f /tmp/t$n.exe
+            arm-mingw32ce-gcc $FLAGS -o /tmp/t$n.exe /tmp/t.c -lcoredll 2>&1 | head -6
+            if [ -f /tmp/t$n.exe ]; then
+              python3 scripts/checkpe.py /tmp/t$n.exe
+            else
+              echo "  ❌ 没产出可执行文件"
+            fi
+          done
+          echo
+          echo "===== 附加探测：能否链接 ws2（网络）====="
+          printf '#include <winsock2.h>\nint WINAPI WinMain(HINSTANCE a,HINSTANCE b,LPWSTR c,int d){SOCKET s=socket(AF_INET,SOCK_STREAM,0);(void)s;return 0;}\n' > /tmp/w.c
+          arm-mingw32ce-gcc -o /tmp/w.exe /tmp/w.c -lcoredll -lws2 2>&1 | head -8
+          [ -f /tmp/w.exe ] && python3 scripts/checkpe.py /tmp/w.exe || echo "  ❌ ws2 链接失败"
+          echo
+          echo "（自检结束 —— 无论结果如何都继续打包）"
+          exit 0
 
       - name: 打包
         run: |
