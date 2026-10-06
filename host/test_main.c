@@ -26,6 +26,12 @@ int main(int argc, char **argv)
     (void)argc;
     (void)argv;
 
+    /* 输出必须无缓冲：程序是被管道捕获的，而管道下 stdout 是全缓冲的 ——
+     * 一旦中途崩溃，缓冲区里的内容会全部丢失，我们就完全看不到它走到哪了。
+     * 这个坑已经踩过一次。 */
+    setvbuf(stdout, NULL, _IONBF, 0);
+    setvbuf(stderr, NULL, _IONBF, 0);
+
     printf("══ 用真实协议代码连假手机 ══\n");
 
     /* ⓪ 诊断：先用最朴素的方式连一次。
