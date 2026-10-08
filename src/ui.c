@@ -47,7 +47,15 @@ static HFONT mkfont(int h, int weight)
     lf.lfQuality        = DEFAULT_QUALITY;
     lf.lfPitchAndFamily = DEFAULT_PITCH | FF_DONTCARE;
     /* lfFaceName 留空 = 系统默认字面，各种 WinCE ROM 上最稳 */
-    return CreateFontIndirectW(&lf);
+    {
+        HFONT f = CreateFontIndirectW(&lf);
+        /* 万一本 ROM 没有可缩放的字体，CreateFontIndirectW 会返回 NULL。
+         * 那时候退回系统字体 —— 字号不对，但【字至少还在】，
+         * 不至于让用户面对一块什么都没有的屏幕。 */
+        if (!f)
+            f = (HFONT)GetStockObject(SYSTEM_FONT);
+        return f;
+    }
 }
 
 /* 估一段文字的宽度。
