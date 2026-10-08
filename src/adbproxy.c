@@ -99,6 +99,36 @@ static char      g_pkgs[2048];        /* 手机包名清单（截断保留） */
 static char      g_note[256];         /* 最近一次拉起的说明（现场排查用） */
 static int       g_tried_launch;      /* 只尝试拉起一次，避免反复折腾 */
 
+/* ══ ADB 访问锁 ══════════════════════════════════════════════════════════════
+ * 为什么必须有：ADB 对象 g_adb 是【共享】的，而它会同时被两个线程碰 ——
+ *   · 转发器线程（adbp_thread）：adb_pump / adb_recv 搬数据
+ *   · 会话线程（viewer.c 拉起手机端）：adb_run_shell → adb_open / adb_pump
+ * 两个线程同时改 a->ch[] 通道表，会把通道分配搞坏（本地 id 是按槽位下标算的），
+ * 表现是「命令发出去了但回显错乱」「通道莫名关掉」，甚至读到半个消息 ——
+ * 在车机上就是「手机端启动了，但怎么都连不上」，而且极难查。
+ *
+ * 锁范围刻意收窄：【只圈 ADB 调用】，不圈 select / accept / 本地 send。
+ * 否则拉起手机端那几十秒会把整个转发卡死。幸好 CRITICAL_SECTION 可重入，
+ * open_with_retry → adbp_launch_phone_app 这种同线程嵌套不会死锁。 */
+#ifdef ADBP_HOST_TEST
+#define ADBP_LOCK()   ((void)0)
+#define ADBP_UNLOCK() ((void)0)
+static void adbp_lock_init(void) { }
+#else
+#include <windows.h>          /* CRITICAL_SECTION / InitializeCriticalSection */
+static CRITICAL_SECTION g_adb_lock;
+static int              g_adb_lock_ready = 0;
+static void adbp_lock_init(void)
+{
+    if (!g_adb_lock_ready) {
+        InitializeCriticalSection(&g_adb_lock);
+        g_adb_lock_ready = 1;
+    }
+}
+#define ADBP_LOCK()   EnterCriticalSection(&g_adb_lock)
+#define ADBP_UNLOCK() LeaveCriticalSection(&g_adb_lock)
+#endif
+
 static void set_status(const char *fmt, ...)
 {
     va_list ap;
@@ -120,10 +150,13 @@ static void set_nonblock(SOCKET s)
 
 static void close_conn(int i)
 {
+    /* 整个函数体在锁里：它要动 g_adb 的通道表 */
     if (!g_conn[i].used)
         return;
     if (g_conn[i].chan > 0)
+        ADBP_LOCK();
         adb_close_chan(&g_adb, g_conn[i].chan);
+        ADBP_UNLOCK();
     if (g_conn[i].sock != INVALID_SOCKET)
         closesocket(g_conn[i].sock);
     g_conn[i].used = 0;
@@ -133,11 +166,20 @@ static void close_conn(int i)
 
 static void conn_push_to_phone(int i, const unsigned char *d, int n)
 {
-    if (adb_send(&g_adb, g_conn[i].chan, d, n) < 0) {
-        close_conn(i);
-        return;
-    }
-    g_tx_bytes += (unsigned long)n;
+    int bad = 0;
+
+    /* ⚠ 绝不能在这里提前 return —— 忘了 UNLOCK 就是永久死锁，
+     *   转发线程会卡在下一轮 ADBP_LOCK 上，表现是「连上之后彻底不动」。
+     *   所有出口都走下面的统一解锁。 */
+    ADBP_LOCK();
+    if (adb_send(&g_adb, g_conn[i].chan, d, n) < 0)
+        bad = 1;
+    else
+        g_tx_bytes += (unsigned long)n;
+    ADBP_UNLOCK();
+
+    if (bad)
+        close_conn(i);           /* 它自己会再加锁，可重入，不会死锁 */
 }
 
 /* 转发被拒时，尝试把手机端拉起来。
@@ -164,8 +206,15 @@ static int resolve_activity(const char *pkg, char *out, int cap)
 
     snprintf(cmd, sizeof(cmd) - 1, "cmd package resolve-activity --brief %s", pkg);
     buf[0] = 0;
-    if (adb_run_shell(&g_adb, cmd, buf, (int)sizeof(buf) - 1, 6000) != 0)
-        return -1;
+    /* 自己加锁做纵深防御：现在只从 launch_body 调（那边已持锁，可重入无害），
+     * 但万一日后别处调用，也不会漏锁。 */
+    ADBP_LOCK();
+    {
+        int rr = adb_run_shell(&g_adb, cmd, buf, (int)sizeof(buf) - 1, 6000);
+        ADBP_UNLOCK();
+        if (rr != 0)
+            return -1;
+    }
 
     /* 输出形如：com.baidu.carlife/com.baidu.carlife.CarlifeActivity */
     p = strchr(buf, '/');
@@ -191,15 +240,22 @@ static int pkg_running(const char *pkg)
     if (!pkg) return -1;
     snprintf(cmd, sizeof(cmd) - 1, "pidof %s", pkg);
     buf[0] = 0;
-    if (adb_run_shell(&g_adb, cmd, buf, (int)sizeof(buf) - 1, 3000) != 0)
-        return -1;                       /* 问不出来 —— 不算"没在跑" */
+    ADBP_LOCK();
+    {
+        int rr = adb_run_shell(&g_adb, cmd, buf, (int)sizeof(buf) - 1, 3000);
+        ADBP_UNLOCK();
+        if (rr != 0)
+            return -1;                   /* 问不出来 —— 不算"没在跑" */
+    }
     p = buf;
     while (*p == ' ' || *p == '\r' || *p == '\n' || *p == '\t') p++;
     /* pidof 有数字输出 = 进程在 */
     return (*p >= '0' && *p <= '9') ? 1 : 0;
 }
 
-int adbp_launch_phone_app(char *detail, int cap)
+/* ⚠ 不变量：本函数【只能】由 adbp_launch_phone_app 调用 —— 那里整体持着
+ *   ADB 锁。直接调它会让 ADB 访问逃出锁外（这就是当初那个双线程竞态）。 */
+static int launch_body(char *detail, int cap)
 {
     char  buf[8192];
     char  pkg[208];
@@ -289,6 +345,20 @@ int adbp_launch_phone_app(char *detail, int cap)
     return 0;                       /* 启动动作已完成 → 调用方应当重试 */
 }
 
+/* 对外的入口：加锁版。函数体在 launch_body 里。
+ * 这一整段会做 3~4 次 shell 往返（最坏几十秒），全程持锁 ——
+ * 期间转发线程不碰 ADB。这是刻意的：这段时间手机端还没起来，
+ * 本来也没有数据要转发。 */
+int adbp_launch_phone_app(char *detail, int cap)
+{
+    int r;
+    adbp_lock_init();
+    ADBP_LOCK();
+    r = launch_body(detail, cap);
+    ADBP_UNLOCK();
+    return r;
+}
+
 
 const char *adbp_phone_packages(void)
 {
@@ -304,7 +374,11 @@ const char *adbp_last_note(void)
  * 必须由持有设备的那个线程调用（内部会收发 ADB 数据）。 */
 static int open_with_retry(const char *service)
 {
-    int id = adb_open(&g_adb, service);
+    int id;
+    adbp_lock_init();
+    ADBP_LOCK();
+    id = adb_open(&g_adb, service);
+    ADBP_UNLOCK();
 
     if (id >= 0)
         return id;
@@ -318,7 +392,9 @@ static int open_with_retry(const char *service)
         if (adbp_launch_phone_app(detail, (int)sizeof(detail)) == 0) {
             set_status("%s，等它起来 ...", detail);
             ADBP_SLEEP(2500);                /* 给它一点启动时间 */
+            ADBP_LOCK();
             id = adb_open(&g_adb, service);
+            ADBP_UNLOCK();
         } else {
             set_status("%s", detail);
         }
@@ -418,7 +494,9 @@ static ADBP_THREAD_RET ADBP_API adbp_thread(ADBP_THREAD_ARG arg)
         }
 
         /* ② 收设备这一侧（非阻塞，收不到就算了） */
+        ADBP_LOCK();
         r = adb_pump(&g_adb, 0);
+        ADBP_UNLOCK();
         if (r < 0) {
             set_status("ADB 通道断了（错误 %d）", r);
             g_stop = 1;
@@ -428,17 +506,28 @@ static ADBP_THREAD_RET ADBP_API adbp_thread(ADBP_THREAD_ARG arg)
         /* ③ 设备→本地 */
         for (i = 0; i < ADBP_MAX_CONN; i++) {
             if (!g_conn[i].used) continue;
-            for (;;) {
-                int n = adb_recv(&g_adb, g_conn[i].chan, buf, ADBP_BUF);
-                if (n <= 0) break;
-                if (send(g_conn[i].sock, (const char *)buf, n, 0) <= 0) {
-                    close_conn(i);
-                    break;
-                }
-                g_rx_bytes += (unsigned long)n;
-            }
-            if (g_conn[i].used && adb_chan_closed(&g_adb, g_conn[i].chan))
-                close_conn(i);
+              for (;;) {
+                  int n;
+                  /* 取数据要加锁；往本地 socket 送数据【不锁】——
+                   * 送数据可能阻塞，把它圈进锁里会把「拉起手机端」那几十秒拖得更长。 */
+                  ADBP_LOCK();
+                  n = adb_recv(&g_adb, g_conn[i].chan, buf, ADBP_BUF);
+                  ADBP_UNLOCK();
+                  if (n <= 0) break;
+                  if (send(g_conn[i].sock, (const char *)buf, n, 0) <= 0) {
+                      close_conn(i);
+                      break;
+                  }
+                  g_rx_bytes += (unsigned long)n;
+              }
+              if (g_conn[i].used) {
+                  int cls;
+                  ADBP_LOCK();
+                  cls = adb_chan_closed(&g_adb, g_conn[i].chan);
+                  ADBP_UNLOCK();
+                  if (cls)
+                      close_conn(i);
+              }
         }
     }
 
@@ -458,10 +547,16 @@ int adbp_start_with_io(ADB_IO io, const char * const *services, int n_services,
     int     i;
 
     if (reason && reason_cap > 0) reason[0] = 0;
+    adbp_lock_init();
+
     g_stop = 0;
     g_running = 0;
     g_tx_bytes = g_rx_bytes = 0;
     g_nsvc = 0;
+    /* ⚠ 每次启动都要清掉「本进程已经试过拉起手机端」这颗旗标。
+     *   open_transport 会反复调 adbp_start（最多 60 次），旗标留着的话，
+     *   后面几轮即使手机端真没起来也不会再拉。 */
+    g_tried_launch = 0;
 
     for (i = 0; i < ADBP_MAX_CONN; i++) {
         g_conn[i].used = 0;
