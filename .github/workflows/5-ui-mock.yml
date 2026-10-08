@@ -1,0 +1,61 @@
+# ─────────────────────────────────────────────────────────────────────────────
+# 5. UI 设计稿渲染
+#
+# 为什么要有这个工作流：
+#   车机上开发者看不到界面效果，而这个界面是给人在车里看的 ——
+#   纯靠想象改版面必然走样。
+#   所以把 src/ui_layout.h 里的配色与几何，用同一份常量在电脑上渲染成 PNG，
+#   先看过再定稿。C 代码和渲染脚本读的是【同一个文件】，不会各说各话。
+#
+# 顺带在这里交叉编译一次 ui.c，保证新写的界面代码能为 ARM/WinCE 编译。
+# ─────────────────────────────────────────────────────────────────────────────
+name: 5. UI mock render
+
+on:
+  push:
+    branches: [main, master]
+    paths:
+      - 'src/ui_layout.h'
+      - 'src/ui.c'
+      - 'src/ui.h'
+      - 'tools/render_ui_mock.py'
+      - '.github/workflows/5-ui-mock.yml'
+  workflow_dispatch:
+
+jobs:
+  render:
+    name: 渲染界面设计稿
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: 装依赖
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq python3-pil fonts-noto-cjk
+          python3 -c "import PIL; print('PIL', PIL.__version__)"
+          fc-list 2>/dev/null | grep -i -m3 noto || true
+
+      - name: 渲染各状态的设计稿
+        run: python3 tools/render_ui_mock.py ui-mock
+
+      - name: 顺带验证 ui.c 能为 ARM/WinCE 编译
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh release download cegcc-arm \
+            --pattern 'cegcc-arm-mingw32ce.tar.gz' \
+            --dir "$RUNNER_TEMP" --clobber
+          mkdir -p "$HOME/tc"
+          tar xzf "$RUNNER_TEMP/cegcc-arm-mingw32ce.tar.gz" -C "$HOME/tc"
+          export PATH="$HOME/tc/cegcc/bin:$PATH"
+          arm-mingw32ce-gcc -Os -Wall -DUNICODE -D_UNICODE -Isrc -c src/ui.c -o /tmp/ui.o
+          echo "ui.c 已为 ARM/WinCE 编译通过"
+          arm-mingw32ce-nm /tmp/ui.o | grep -c ' T ui_' || true
+
+      - name: 上传设计稿
+        uses: actions/upload-artifact@v4
+        with:
+          name: ui-mock
+          path: ui-mock/*.png
+          if-no-files-found: error
