@@ -16,14 +16,13 @@
 #include "adbproxy.h"
 #include "third_party/nanojpeg.h"
 #include "cllog.h"
+#include "ui.h"
 #ifdef HAS_H264
 #include "h264dec.h"
 #endif
 
-#define STATUS_H   22          /* 底部状态栏高度 */
-#define EXIT_W     58          /* 状态栏右侧「退出」按钮宽度 */
-#define RES_W      96          /* 状态栏「分辨率」切换按钮宽度 */
-#define TOG_W      56          /* 状态栏「触摸包头」切换按钮宽度 */
+/* 底部栏的高度、按钮宽度都已归 ui.c 统一管理（见 ui_layout.h）。
+ * 这里原来的一套常量已删 —— 两处各写一套必然走样。 */
 #define RX_CAP     (512 * 1024)
 
 static HWND     g_hwnd = 0;
@@ -378,6 +377,37 @@ static void load_preset(void)
 }
 
 /* ── 窗口过程 ── */
+/* ANSI → WCHAR，只用于把日志/转发器里的说明搬到界面上。
+ * 手写而不用 MultiByteToWideChar：本工具链的 coredll 上那些转换函数不一定有导出。 */
+static void a2w_ui(const char *a, WCHAR *w, int cap)
+{
+    int i;
+    if (cap <= 0) return;
+    for (i = 0; i < cap - 1 && a[i]; i++)
+        w[i] = (WCHAR)(unsigned char)a[i];
+    w[i] = 0;
+}
+
+/* 把当前状态同步到界面上按钮的文字。
+ * 按钮的矩形和文字都由 ui.c 统一管理，这里只推状态 ——
+ * 避免出现「画在 A 处、点在 B 处」这种最难查的错位。 */
+static void sync_button_labels(void)
+{
+    ui_button_label(UI_BTN_TOUCH, g_touch_mode == 0 ? L"触摸 A" : L"触摸 B");
+    ui_button_label(UI_BTN_RES, g_presets[g_preset].name);
+    ui_button_label(UI_BTN_EXIT, L"退出");
+}
+
+/* 阶段轨道 + 日志，一次写完 —— 两边必须一致：
+ * 用户拍屏幕和拿日志回来，要对得上号。 */
+static void stage_set(int n, int state, const WCHAR *detail)
+{
+    ui_stage(n, state);
+    ui_stage_detail(n, detail);
+    if (g_hwnd)
+        InvalidateRect(g_hwnd, 0, FALSE);
+}
+
 static LRESULT CALLBACK WndProc(HWND h, UINT m, WPARAM w, LPARAM l)
 {
     switch (m) {
@@ -387,77 +417,16 @@ static LRESULT CALLBACK WndProc(HWND h, UINT m, WPARAM w, LPARAM l)
         RECT rc, area;
         GetClientRect(h, &rc);
 
-        area = rc;
-        area.bottom -= STATUS_H;
+        /* 画面区由 ui.c 统一决定（只留底部一条 26px 细栏）*/
+        ui_view_rect(&rc, &area);
 
         if (g_disp.fb) {
             disp_paint(&g_disp, dc, &area);
+            ui_paint_statusbar(dc, &rc);      /* 连上了：只剩一条细状态条 */
         } else {
-            RECT f = area;
-            FillRect(dc, &f, (HBRUSH)GetStockObject(WHITE_BRUSH));
+            ui_paint_connect(dc, &rc);        /* 没连上：整屏连接进度板 */
         }
 
-        /* 状态栏 */
-        {
-            RECT bar = rc;
-            HBRUSH br;
-            bar.top = rc.bottom - STATUS_H;
-            br = CreateSolidBrush(RGB(32, 32, 32));
-            FillRect(dc, &bar, br);
-            DeleteObject(br);
-
-            SetBkMode(dc, TRANSPARENT);
-            SetTextColor(dc, RGB(230, 230, 230));
-            bar.left += 6;
-            DrawTextW(dc, g_status, -1, &bar,
-                      DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS);
-
-            /* 触摸写法切换按钮：
-             * 参考实现里触摸有两套写法，但只能看出其中一套在被使用
-             * （另一套在示例代码里是注释状态）。从源码分不出手机接受哪套，
-             * 做成按钮现场直接试，不用重新编译。 */
-            {
-                RECT tg = rc;
-                HBRUSH tb = CreateSolidBrush(g_touch_mode == 0
-                                             ? RGB(40, 90, 40) : RGB(120, 90, 20));
-                WCHAR lbl[24];
-                tg.top = rc.bottom - STATUS_H;
-                tg.right = rc.right - EXIT_W;
-                tg.left = tg.right - TOG_W;
-                FillRect(dc, &tg, tb);
-                DeleteObject(tb);
-                SetTextColor(dc, RGB(255, 255, 255));
-                wsprintfW(lbl, L"触摸%s", g_touch_mode == 0 ? L"A" : L"B");
-                DrawTextW(dc, lbl, -1, &tg, DT_CENTER | DT_VCENTER | DT_SINGLELINE);
-            }
-
-            /* 分辨率预设按钮 */
-            {
-                RECT rb = rc;
-                HBRUSH bb = CreateSolidBrush(RGB(40, 60, 110));
-                rb.top = rc.bottom - STATUS_H;
-                rb.right = rc.right - EXIT_W - TOG_W;
-                rb.left = rb.right - RES_W;
-                FillRect(dc, &rb, bb);
-                DeleteObject(bb);
-                SetTextColor(dc, RGB(255, 255, 255));
-                DrawTextW(dc, g_presets[g_preset].name, -1, &rb,
-                          DT_CENTER | DT_VCENTER | DT_SINGLELINE);
-            }
-
-            /* 退出按钮 */
-            {
-                RECT ex = rc;
-                HBRUSH eb = CreateSolidBrush(RGB(150, 40, 40));
-                ex.top = rc.bottom - STATUS_H;
-                ex.left = rc.right - EXIT_W;
-                FillRect(dc, &ex, eb);
-                DeleteObject(eb);
-                SetTextColor(dc, RGB(255, 255, 255));
-                DrawTextW(dc, L"退出", -1, &ex,
-                          DT_CENTER | DT_VCENTER | DT_SINGLELINE);
-            }
-        }
         EndPaint(h, &ps);
         return 0;
     }
@@ -468,39 +437,41 @@ static LRESULT CALLBACK WndProc(HWND h, UINT m, WPARAM w, LPARAM l)
         int px, py;
         GetClientRect(h, &rc);
 
-        /* 右下角退出按钮 */
-        if (x >= rc.right - EXIT_W && y >= rc.bottom - STATUS_H) {
-            g_quit = 1;
-            DestroyWindow(h);
-            return 0;
-        }
-        /* 分辨率预设切换 */
-        if (x >= rc.right - EXIT_W - TOG_W - RES_W && x < rc.right - EXIT_W - TOG_W
-            && y >= rc.bottom - STATUS_H) {
-            g_preset = (g_preset + 1) % N_PRESETS;
-            save_preset();
-            apply_preset();
-            {
-                WCHAR t[200];
-                wsprintfW(t, L"已切换到 %s", g_presets[g_preset].name);
-                set_status(t);
+        /* 底部栏按钮：命中测试交给 ui.c。
+         * 绝不能在这里另写一套坐标 —— 一旦和绘制用的矩形不一致，
+         * 就会出现「看得见点不着」，而且极难查。 */
+        {
+            int b = ui_hit_button(x, y, &rc);
+            if (b == UI_BTN_EXIT) {
+                g_quit = 1;
+                DestroyWindow(h);
+                return 0;
             }
-            InvalidateRect(h, 0, FALSE);
-            return 0;
-        }
-        /* 触摸写法切换 */
-        if (x >= rc.right - EXIT_W - TOG_W && x < rc.right - EXIT_W
-            && y >= rc.bottom - STATUS_H) {
-            g_touch_mode = (g_touch_mode == 0) ? 1 : 0;
-            set_status(g_touch_mode == 0
-                       ? L"触摸写法 A：专用消息 + 单点坐标（参考实现在用）"
-                       : L"触摸写法 B：通用消息 + 动作+坐标（参考实现里注释掉的）");
-            InvalidateRect(h, 0, FALSE);
-            return 0;
+            if (b == UI_BTN_RES) {
+                g_preset = (g_preset + 1) % N_PRESETS;
+                save_preset();
+                apply_preset();
+                sync_button_labels();
+                {
+                    WCHAR t[200];
+                    wsprintfW(t, L"已切换到 %s", g_presets[g_preset].name);
+                    set_status(t);
+                }
+                InvalidateRect(h, 0, FALSE);
+                return 0;
+            }
+            if (b == UI_BTN_TOUCH) {
+                g_touch_mode = (g_touch_mode == 0) ? 1 : 0;
+                sync_button_labels();
+                set_status(g_touch_mode == 0
+                           ? L"触摸写法 A：专用消息 + 单点坐标"
+                           : L"触摸写法 B：通用消息 + 动作+坐标");
+                InvalidateRect(h, 0, FALSE);
+                return 0;
+            }
         }
 
-        area = rc;
-        area.bottom -= STATUS_H;
+        ui_view_rect(&rc, &area);
         if (disp_map_touch(&g_disp, &area, x, y, &px, &py) == 0) {
             SetCapture(h);
             g_captured = 1;
@@ -519,8 +490,7 @@ static LRESULT CALLBACK WndProc(HWND h, UINT m, WPARAM w, LPARAM l)
         if (!g_captured)
             return 0;
         GetClientRect(h, &rc);
-        area = rc;
-        area.bottom -= STATUS_H;
+        ui_view_rect(&rc, &area);
         if (disp_map_touch(&g_disp, &area, x, y, &px, &py) == 0) {
             g_last_px = px;
             g_last_py = py;
@@ -538,8 +508,7 @@ static LRESULT CALLBACK WndProc(HWND h, UINT m, WPARAM w, LPARAM l)
         g_captured = 0;
         ReleaseCapture();
         GetClientRect(h, &rc);
-        area = rc;
-        area.bottom -= STATUS_H;
+        ui_view_rect(&rc, &area);
         /* ⚠ "抬起"必须无条件发出去。
          *
          *   原来这里和按下一样做了边界判断：手指拖到画面外再松开就【不发
@@ -556,6 +525,11 @@ static LRESULT CALLBACK WndProc(HWND h, UINT m, WPARAM w, LPARAM l)
         g_have_last = 0;
         return 0;
     }
+
+    /* 整窗都是我们自己画的（含深色底），让系统先擦成白色只会闪一下。
+     * 直接返回 1 = 「背景我已经处理了」。 */
+    case WM_ERASEBKGND:
+        return 1;
 
     case WM_KEYDOWN:
         if (w == VK_ESCAPE || w == VK_BACK) {
@@ -610,8 +584,12 @@ static int open_transport(void)
             set_status(t);
         }
 
-        if (tries == 0)
+        if (tries == 0) {
             cl_log_stage(1, 8, "打开 ADB 设备 / ADB 认证 / 建立端口转发");
+            ui_headline(L"用 USB 线把手机连到车机",
+                        L"然后在手机上打开「USB 调试」并点「允许」");
+            stage_set(0, UI_ST_ACTIVE, L"正在等待…");
+        }
 
         if (adbp_start(svc, 3, ports, reason, (int)sizeof(reason)) == 0) {
             g_ip         = htonl(0x7F000001UL);   /* 连本机，端口已被转到手机上 */
@@ -621,6 +599,11 @@ static int open_transport(void)
             g_route      = 1;
             g_adb_ok     = 1;
             cl_log_step("ADB 设备打开 + 认证 + 端口转发", 1, 0);
+            {
+                WCHAR w[80];
+                a2w_ui(reason, w, 80);
+                stage_set(0, UI_ST_DONE, w);
+            }
             cl_log("   本地转发端口: CMD=%u  VIDEO=%u  TOUCH=%u",
                    (unsigned)ports[0], (unsigned)ports[1], (unsigned)ports[2]);
             cl_log("   接下来连的是 127.0.0.1:%u（数据经 ADB 隧道到手机）",
@@ -629,6 +612,19 @@ static int open_transport(void)
         }
 
         cl_log_step("ADB 设备打开 + 认证 + 端口转发", 0, reason);
+        {
+            WCHAR w[80];
+            a2w_ui(reason, w, 80);
+            stage_set(0, UI_ST_FAIL, w);
+            ui_headline(L"没认到手机",
+                        L"换个车机 USB 口，或换一根能传数据的数据线");
+            {
+                WCHAR f[200];
+                wsprintfW(f, L"已等待 %d 秒。日志里记着每个 ADB 设备名各自的错误码。",
+                          tries * 2);
+                ui_footline(f);
+            }
+        }
         cl_log("   第 %d 次尝试失败。常见原因：",
                tries + 1);
         cl_log("     · 手机没插线 / 线只充电不传数据 / 插的不是支持数据的 USB 口");
@@ -739,6 +735,10 @@ static void run_session(void)
         int  k;
 
         cl_log_stage(2, 8, "拉起手机端智能车载（ADB shell）");
+        stage_set(1, UI_ST_ACTIVE, L"正在启动…");
+        ui_headline(L"手机已连上，正在启动车载系统",
+                    L"如果手机弹出权限框，请点「允许」");
+        ui_footline(L"");
         {
             const char *pk = adbp_phone_packages();
             if (pk && pk[0]) {
@@ -755,9 +755,19 @@ static void run_session(void)
             if (adbp_launch_phone_app(detail, (int)sizeof(detail)) == 0) {
                 cl_log_step("拉起手机端智能车载", 1, 0);
                 cl_log("   %s", detail);
+                {
+                    WCHAR w[80];
+                    a2w_ui(detail, w, 80);
+                    stage_set(1, UI_ST_DONE, w);
+                }
                 break;
             }
             cl_log_step("拉起手机端智能车载", 0, detail);
+            {
+                WCHAR w[80];
+                a2w_ui(detail, w, 80);
+                stage_set(1, UI_ST_FAIL, w);
+            }
             {
                 WCHAR t[420], w[280];
                 int n;
@@ -776,6 +786,7 @@ static void run_session(void)
     /* 手机端起来之后还要一两秒才会开始监听 7240，所以这里必须重试，
      * 不能连一次不通就放弃。 */
     cl_log_stage(3, 8, "连接控制通道（经 ADB 转发到手机的 7240）");
+    if (g_route == 1) stage_set(2, UI_ST_ACTIVE, L"正在连…");
     {
         int k;
         cmd = INVALID_SOCKET;
@@ -784,6 +795,7 @@ static void run_session(void)
             if (cmd != INVALID_SOCKET) {
                 cl_log_step("连上控制通道 7240", 1, 0);
                 cl_log("   第 %d 次尝试成功", k + 1);
+                stage_set(2, UI_ST_DONE, L"7240");
                 break;
             }
             cl_log("   第 %d 次连 7240 不通（手机端可能还没开始监听）", k + 1);
@@ -800,6 +812,9 @@ static void run_session(void)
     if (cmd == INVALID_SOCKET) {
         cl_log_step("连上控制通道 7240", 0,
                     "连了 10 次都不通，手机端始终没监听");
+        stage_set(2, UI_ST_FAIL, L"手机端没监听");
+        ui_headline(L"手机连上了，但车载系统没响应",
+                    L"看一眼手机上是不是弹了权限框，点「允许」");
         cl_log("   ⚠ 到这里就卡住了。可能原因：");
         cl_log("     · 手机端智能车载没被拉起来（看上面一阶段的结果）");
         cl_log("     · 手机上弹了权限框没点「允许」");
@@ -814,6 +829,7 @@ static void run_session(void)
                : L"已通过 USB 网络共享连上手机，正在握手 ...");
 
     cl_log_stage(4, 8, "CarLife 协议握手（问手机支持哪个协议版本）");
+    stage_set(3, UI_ST_ACTIVE, L"协商中…");
     {
         int match = -1;
         unsigned long reply = 0;
@@ -821,8 +837,14 @@ static void run_session(void)
         if (st == CL_OK) {
             cl_log_step("协议握手", 1, 0);
             cl_log("   手机回的版本匹配状态 = %d，原始值 = %lu", match, reply);
+            {
+                WCHAR w[40];
+                wsprintfW(w, L"版本 %d", match);
+                stage_set(3, UI_ST_DONE, w);
+            }
         } else {
             cl_log_step("协议握手", 0, "手机没回应协议版本");
+            stage_set(3, UI_ST_FAIL, L"手机没回应");
         }
         if (st != CL_OK) {
             WCHAR t[200];
@@ -839,6 +861,7 @@ static void run_session(void)
     g_cmd = cmd;
 
     cl_log_stage(5, 8, "打开视频通道（8240）");
+    stage_set(4, UI_ST_ACTIVE, L"正在连…");
     g_vid = cl_connect(g_ip, (int)g_port_vid, 2000);
     if (g_vid == INVALID_SOCKET) {
         cl_log_step("打开视频通道 8240", 0, "连不上");
@@ -846,6 +869,7 @@ static void run_session(void)
         return;
     }
     cl_log_step("打开视频通道 8240", 1, 0);
+    stage_set(4, UI_ST_DONE, L"8240");
 
     /* 参考实现要求：每个通道使用前都要重发一次协议版本。 */
     cl_resend_version(cmd);
@@ -854,6 +878,7 @@ static void run_session(void)
      * 它们是 CCmdChannelModule 的成员方法，不是视频通道模块的），
      * 所以只需要传控制 socket。 */
     cl_log_stage(6, 8, "向手机请求画面参数（分辨率 / 帧率 / 编码格式）");
+    stage_set(5, UI_ST_ACTIVE, L"协商中…");
     load_preset();
     cl_log("   本次请求 %dx%d @ %d 帧",
            g_presets[g_preset].w, g_presets[g_preset].h, g_presets[g_preset].fps);
@@ -900,6 +925,8 @@ static void run_session(void)
         if (r == CL_OK) {
             if (g_frames == 0) {
                 cl_log_stage(7, 8, "开始接收画面 —— 后面就看画面能不能出来了");
+                stage_set(5, UI_ST_DONE, L"已协商");
+                stage_set(6, UI_ST_ACTIVE, L"已收 0 帧");
                 cl_log("   第一帧 %d 字节", len);
                 /* 首帧的头几十个字节是最关键的证据：能直接看出
                  * 是 JPEG 还是 H.264、什么 profile、怎么切帧。 */
@@ -918,6 +945,17 @@ static void run_session(void)
                 }
             }
             /* 每 50 帧往日志里记一行，用来判断"到底有没有在动、丢多少" */
+            /* 每 10 帧更新一次界面上的「接收画面」那一行与底部统计 ——
+             * 数字在动，就说明程序活着，而不是卡死了 */
+            if (g_frames % 10 == 0) {
+                WCHAR w[40], f[200];
+                wsprintfW(w, L"已收 %d 帧", g_frames);
+                stage_set(6, UI_ST_ACTIVE, w);
+                wsprintfW(f, L"%dx%d · %d 帧/秒 · 已收 %d 帧",
+                          g_disp.sw, g_disp.sh, g_fps, g_frames);
+                ui_footline(f);
+                if (g_hwnd) InvalidateRect(g_hwnd, 0, FALSE);
+            }
             if (g_frames % 50 == 0) {
                 cl_log("收帧统计: 共 %d 帧 / 解码成功 %d / 显示 %d / 连续失败 %d / 约 %d 帧每秒",
                        g_frames, g_decoded, g_shown, g_miss, g_fps);
@@ -979,6 +1017,13 @@ int WINAPI WinMain(HINSTANCE hi, HINSTANCE hp, LPWSTR cmdline, int show)
                              0, 0, hi, 0);
     if (!g_hwnd)
         return 1;
+
+    /* 界面资源要在第一次绘制之前建好（字体、画刷都在 ui_init 里）*/
+    ui_init(g_hwnd);
+    sync_button_labels();
+    ui_headline(L"用 USB 线把手机连到车机",
+                L"然后在手机上打开「USB 调试」并点「允许」");
+    stage_set(0, UI_ST_ACTIVE, L"正在等待…");
 
     ShowWindow(g_hwnd, SW_SHOW);
     UpdateWindow(g_hwnd);
@@ -1044,6 +1089,7 @@ int WINAPI WinMain(HINSTANCE hi, HINSTANCE hp, LPWSTR cmdline, int show)
     if (g_vid   != INVALID_SOCKET) closesocket(g_vid);
     if (g_touch != INVALID_SOCKET) closesocket(g_touch);
     disp_free(&g_disp);
+    ui_free();
     if (g_rx) free(g_rx);
     cl_log_close();
     return 0;
