@@ -727,7 +727,60 @@ static HANDLE g_hthr = 0;
 static DWORD WINAPI session_thread(LPVOID param)
 {
     (void)param;
-    run_session();
+
+    for (;;) {
+        run_session();
+        if (g_quit)
+            break;
+
+        /* ⚠⚠ 这一圈【必须能自己重来】，否则很容易白跑一趟。
+         *
+         *   会话结束而用户没按退出，就说明中途失败了 —— 而现场最常见的失败
+         *   恰恰是「用户第一次没来得及点『允许 USB 调试』」。
+         *   那一下错过，ADB 认证就过不去，整条链路到此为止。
+         *   不给重试的话，用户只能退出程序、重新启动一次，
+         *   而人正坐在车里 —— 这一趟就白跑了。
+         *
+         *   所以：失败不是终点，等几秒把上一轮收干净，从头再来。 */
+        set_status(L"没连上，8 秒后自动重来（按「退出」结束这一轮）");
+        cl_log("=== 本轮会话结束但没连上，8 秒后自动重来 ===");
+        cl_log("    如果手机还没插线或还没点「允许 USB 调试」，现在补上就行。");
+
+        {
+            int k;
+            for (k = 0; k < 80 && !g_quit; k++)
+                Sleep(100);
+        }
+        if (g_quit)
+            break;
+
+        /* 重来之前把上一轮的东西收干净，免得残留一半的状态卡住下一轮 */
+        if (g_cmd   != INVALID_SOCKET) { closesocket(g_cmd);   g_cmd   = INVALID_SOCKET; }
+        if (g_vid   != INVALID_SOCKET) { closesocket(g_vid);   g_vid   = INVALID_SOCKET; }
+        if (g_touch != INVALID_SOCKET) { closesocket(g_touch); g_touch = INVALID_SOCKET; }
+        if (g_adb_ok) { adbp_stop(); g_adb_ok = 0; }
+        g_route      = 0;
+        g_miss       = 0;
+        g_trunc_warn = 0;
+        g_h_toobig   = 0;          /* 下一轮手机可能已经调低画质了 */
+        g_frames     = 0;
+        g_decoded    = 0;
+        g_shown      = 0;
+        g_fps        = 0;
+        g_t0         = GetTickCount();
+
+        ui_stages_reset();
+        ui_footline(L"");
+        sync_button_labels();
+        ui_headline(L"用 USB 线把手机连到车机",
+                    L"然后在手机上打开「USB 调试」并点「允许」");
+        stage_set(0, UI_ST_ACTIVE, L"正在等待…");
+        if (g_hwnd)
+            InvalidateRect(g_hwnd, 0, FALSE);
+
+        cl_log("=== 开始新的一轮 ===");
+    }
+
     WSACleanup();
     return 0;
 }
