@@ -36,6 +36,10 @@ void disp_set_rgb24(DISP *d, const unsigned char *rgb, int w, int h);
 /* 灰度图（单分量）也支持 —— 有些手机会推灰度 JPEG */
 void disp_set_gray8(DISP *d, const unsigned char *gray, int w, int h);
 
+/* BGRA（每像素 4 字节，字节序 B,G,R,A）—— 直接来自 H.264 解码器。
+ * h264bsd 的输出字节序和 Windows DIB 的 32bpp 完全一致，所以这里就是一次搬运。 */
+void disp_set_bgra(DISP *d, const unsigned char *bgra, int w, int h);
+
 /* 把缓冲按比例铺满客户区 */
 void disp_paint(DISP *d, HDC hdc, const RECT *client);
 
