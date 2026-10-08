@@ -16,6 +16,15 @@ on:
       - 'src/viewer.c'
       - 'src/display.c'
       - 'src/display.h'
+      # viewer 链接了整条 ADB 栈，这些文件改了也必须重编，
+      # 否则会发出一个"用旧 ADB 逻辑编的新 viewer"——极难发现。
+      - 'src/adb.c'
+      - 'src/adb.h'
+      - 'src/adbproxy.c'
+      - 'src/adbproxy.h'
+      - 'src/adbio_ce.c'
+      - 'src/rsa.c'
+      - 'src/carlife.c'
       - 'src/h264dec.c'
       - 'src/h264dec.h'
       - 'Makefile'
