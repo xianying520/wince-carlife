@@ -228,7 +228,7 @@ def main():
     cmd = ["gcc", "-O1", "-g", "-Wall", "-DADBP_HOST_TEST", "-Ihost", "-Isrc",
            "-o", exe, "host/test_adbproxy.c", "src/adbproxy.c", "src/adb.c",
            "src/rsa.c", "-lpthread"]
-    p = subprocess.run(cmd, capture_output=True, text=True)
+    p = subprocess.run(cmd, capture_output=True, text=True, errors="replace")
     if p.returncode != 0:
         print("❌ 编译失败")
         print(p.stdout)
