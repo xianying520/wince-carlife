@@ -132,7 +132,22 @@ static int run_one(const char *path, int mode, RESULT *out, const char **why)
         }
     }
 
-    if (out->frames <= 0) { *why = h264dec_log(d); goto done; }
+    if (out->frames <= 0) {
+        *why = h264dec_log(d);
+        /* 把 h264bsd 每次返回的 (返回码, 吃掉字节数) 打出来 —— 车机没法试，
+         * 出问题必须靠这段记录定位 */
+        {
+            const unsigned char *cr = NULL, *cb = NULL;
+            int n = h264dec_trace(d, &cr, &cb), k;
+            printf("        [取证] h264bsdDecode 调用序列 %d 次:\n          ", n);
+            for (k = 0; k < n; k++) {
+                printf("%s/%d ", h264dec_code_name(cr[k]), cb[k]);
+                if ((k + 1) % 8 == 0) printf("\n          ");
+            }
+            printf("\n");
+        }
+        goto done;
+    }
     out->profile = h264dec_profile(d);
     out->fmt     = h264dec_format(d);
     note_pixel(out, outbuf);
