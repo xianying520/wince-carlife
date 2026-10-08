@@ -25,6 +25,8 @@ on:
       - 'src/adbio_ce.c'
       - 'src/rsa.c'
       - 'src/carlife.c'
+      - 'src/cllog.c'
+      - 'src/cllog.h'
       - 'src/h264dec.c'
       - 'src/h264dec.h'
       - 'Makefile'
