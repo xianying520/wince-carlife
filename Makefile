@@ -96,8 +96,8 @@ viewer: $(VIEWER_EXE)
 	@echo "==> 最终程序: $(VIEWER_EXE)"
 	@ls -l $(VIEWER_EXE)
 
-$(BUILD)/viewer.o: src/viewer.c src/carlife.h src/display.h src/adbproxy.h src/third_party/nanojpeg.h | $(BUILD)
-	$(CC) $(CFLAGS) -c $< -o $@
+$(BUILD)/viewer.o: src/viewer.c src/carlife.h src/display.h src/adbproxy.h src/third_party/nanojpeg.h $(if $(H264_OBJS),src/h264dec.h) | $(BUILD)
+	$(CC) $(CFLAGS) $(H264_FLAG) -c $< -o $@
 
 $(BUILD)/display.o: src/display.c src/display.h | $(BUILD)
 	$(CC) $(CFLAGS) -c $< -o $@
@@ -107,9 +107,34 @@ $(BUILD)/display.o: src/display.c src/display.h | $(BUILD)
 $(BUILD)/nanojpeg.o: src/third_party/nanojpeg.c | $(BUILD)
 	$(CC) -Os -w -c $< -o $@
 
+# ── H.264 软解（可选）──────────────────────────────────────────────────────
+# h264bsd 是第三方源码（Apache-2.0 + MIT，源自 AOSP），**不进仓库**：
+# CI 按固定 commit 拉到 third_party/h264bsd，可复现，也不污染本仓库。
+# 没有它的时候 viewer 照样能编（只支持 JPEG），
+# 所以缺了它不会把本仓库的构建搞挂。
+H264BSD  ?= third_party/h264bsd/src
+H264_SRCS := $(wildcard $(H264BSD)/*.c)
+
+ifeq ($(H264_SRCS),)
+  H264_OBJS :=
+  H264_FLAG :=
+  $(info 提示: 没找到 $(H264BSD)，viewer 将【不含】H.264 解码，只支持 JPEG)
+else
+  H264_OBJS := $(BUILD)/h264dec.o $(patsubst $(H264BSD)/%.c,$(BUILD)/h264bsd_%.o,$(H264_SRCS))
+  H264_FLAG := -DHAS_H264 -I$(H264BSD)
+  $(info 提示: 找到 $(words $(H264_SRCS)) 个 h264bsd 源文件，viewer 将【含】H.264 解码)
+endif
+
+$(BUILD)/h264dec.o: src/h264dec.c src/h264dec.h | $(BUILD)
+	$(CC) $(CFLAGS) $(H264_FLAG) -c $< -o $@
+
+# 第三方源码不套用本项目旗标，也不看它的警告噪音
+$(BUILD)/h264bsd_%.o: $(H264BSD)/%.c | $(BUILD)
+	$(CC) -Os -w -I$(H264BSD) -c $< -o $@
+
 VIEWER_OBJS := $(BUILD)/viewer.o $(BUILD)/carlife.o $(BUILD)/display.o \
                $(BUILD)/nanojpeg.o $(BUILD)/adbproxy.o $(BUILD)/adb.o \
-               $(BUILD)/adbio_ce.o $(BUILD)/rsa.o
+               $(BUILD)/adbio_ce.o $(BUILD)/rsa.o $(H264_OBJS)
 
 $(VIEWER_EXE): $(VIEWER_OBJS)
 	$(CC) $(LDFLAGS) -o $@ $^ $(CORELIB) $(NETLIB)
