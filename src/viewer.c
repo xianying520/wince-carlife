@@ -61,6 +61,9 @@ static int      g_last_px = 0, g_last_py = 0, g_have_last = 0;
 static unsigned char *g_rx = 0;
 static int      g_rxcap = 0;
 
+/* 等手机的总秒数。用户可能是先开程序再插线，所以必须等得住。 */
+#define WAIT_SECS  120
+
 static WCHAR    g_status[256] = L"正在连接手机 ...";
 static int      g_frames = 0, g_decoded = 0, g_shown = 0;
 static unsigned long g_t0 = 0;
@@ -517,43 +520,86 @@ static LRESULT CALLBACK WndProc(HWND h, UINT m, WPARAM w, LPARAM l)
 /* ── 连接手机（找地址 + 握手）── */
 /* 决定走哪条路。
  * 返回 0 表示已确定 g_ip 与三个端口；返回 -1 表示两条路都不通。 */
+/* 决定走哪条路。
+ * 返回 0 表示已确定 g_ip 与三个端口；返回 -1 表示两条路都不通。
+ *
+ * ⚠ 这里是【等待循环】，不是只试一次就报错：
+ *   用户的实际操作顺序是「先开程序 → 再插线 → 再在手机上点允许 USB 调试」，
+ *   也就是【程序必须先跑起来等人】，所以必须一直等、一直把当前该做什么显示在
+ *   屏上 —— 屏上那两行字是这个程序唯一的引导手段。
+ *
+ * ⚠ 本函数跑在【后台线程】里（见 session_thread）。绝不能挪回主线程：
+ *   主线程一旦被这里挡住，窗口连一次 WM_PAINT 都处理不了，
+ *   「请插 USB 线」这类提示一个字都显示不出来。 */
 static int open_transport(void)
 {
     static const char *svc[3] = { "tcp:7240", "tcp:8240", "tcp:9340" };
     unsigned short ports[3];
-    char reason[256];
+    char   reason[256];
+    WCHAR  t[320];
+    int    tries = 0;
 
-    set_status(L"正在尝试 ADB 直连（USB）...");
+    for (;;) {
+        reason[0] = 0;
 
-    if (adbp_start(svc, 3, ports, reason, (int)sizeof(reason)) == 0) {
-        g_ip         = htonl(0x7F000001UL);      /* 连本机，端口已被转到手机上 */
-        g_port_cmd   = ports[0];
-        g_port_vid   = ports[1];
-        g_port_touch = ports[2];
-        g_route      = 1;
-        g_adb_ok     = 1;
-        return 0;
-    }
+        if (tries == 0) {
+            set_status(L"① 用 USB 线把手机连到车机      "
+                       L"② 手机上打开「USB 调试」并点「允许」");
+        } else {
+            wsprintfW(t, L"① 用 USB 线连手机   ② 打开「USB 调试」并允许"
+                         L"      （已等待 %d 秒）", tries * 2);
+            set_status(t);
+        }
 
-    /* ADB 不通 —— 把原因留着，一会儿显示给用户看，这是现场排查的关键信息。
-     * ⚠ 这里不能用 lstrcpynA：本工具链的 coredll 里只有 Unicode 版的
-     *   lstrcpynW，链接时会报 undefined reference。手写循环最稳妥。 */
-    {
-        int i;
-        for (i = 0; i < (int)sizeof(g_adb_reason) - 1 && reason[i]; i++)
-            g_adb_reason[i] = reason[i];
-        g_adb_reason[i] = 0;
+        if (adbp_start(svc, 3, ports, reason, (int)sizeof(reason)) == 0) {
+            g_ip         = htonl(0x7F000001UL);   /* 连本机，端口已被转到手机上 */
+            g_port_cmd   = ports[0];
+            g_port_vid   = ports[1];
+            g_port_touch = ports[2];
+            g_route      = 1;
+            g_adb_ok     = 1;
+            return 0;
+        }
+
+        /* ADB 不通 —— 把原因留着，这是现场排查最关键的信息。
+         * ⚠ 这里不能用 lstrcpynA：本工具链的 coredll 里只有 Unicode 版的
+         *   lstrcpynW，链接时会报 undefined reference。手写循环最稳妥。 */
+        {
+            int k;
+            for (k = 0; k < (int)sizeof(g_adb_reason) - 1 && reason[k]; k++)
+                g_adb_reason[k] = reason[k];
+            g_adb_reason[k] = 0;
+        }
+
+        tries++;
+        if (g_quit)
+            return -1;                        /* 用户按了退出，别死等 */
+        if (tries * 2 >= WAIT_SECS)
+            break;                            /* 等够时间还没成，退到下面走网共享 */
+
+        /* 等了几轮之后，把失败原因也显示出来，方便现场判断卡在哪一步 */
+        if (tries >= 3 && g_adb_reason[0]) {
+            WCHAR w[260];
+            int k;
+            for (k = 0; k < 255 && g_adb_reason[k]; k++)
+                w[k] = (WCHAR)(unsigned char)g_adb_reason[k];
+            w[k] = 0;
+            wsprintfW(t, L"等待手机中（已 %d 秒）…%s", tries * 2, w);
+            set_status(t);
+        }
+
+        Sleep(2000);                          /* 给窗口留出刷新的时间 */
     }
 
     /* 退回 USB 网络共享：手机开共享后车机会拿到 IP，扫常见网段 */
     {
         unsigned long ips[16];
-        int n = cl_candidate_ips(ips, 16), i;
-        for (i = 0; i < n; i++) {
-            SOCKET s = cl_connect(ips[i], CL_PORT_CMD, 1200);
-            if (s != INVALID_SOCKET) {
-                closesocket(s);
-                g_ip = ips[i];
+        int n = cl_candidate_ips(ips, 16), k;
+        for (k = 0; k < n; k++) {
+            SOCKET sk = cl_connect(ips[k], CL_PORT_CMD, 1200);
+            if (sk != INVALID_SOCKET) {
+                closesocket(sk);
+                g_ip = ips[k];
                 g_route = 2;
                 return 0;
             }
@@ -565,6 +611,17 @@ static int open_transport(void)
 static SOCKET connect_cmd(void)
 {
     return cl_connect(g_ip, (int)g_port_cmd, 2000);
+}
+
+/* 会话跑在后台线程。主线程必须留在消息循环里，否则窗口根本不刷新。 */
+static HANDLE g_hthr = 0;
+
+static DWORD WINAPI session_thread(LPVOID param)
+{
+    (void)param;
+    run_session();
+    WSACleanup();
+    return 0;
 }
 
 static void run_session(void)
@@ -587,10 +644,62 @@ static void run_session(void)
         return;
     }
 
-    cmd = connect_cmd();
+    /* ── 拉起手机端的智能车载 ──────────────────────────────────────────────
+     * ⚠ 这一步原来是【完全缺失】的，而它正是「车机提示需要打开手机端 CarLife」
+     *   那个症状的根源：
+     *   车机连上 ADB 之后直接就去连 7240，可手机上的智能车载
+     *   （vivo Jovi InCar / OPPO 车联 / 小米 CarWith，底层都是百度 CarLife 组件）
+     *   当时根本没启动，也就没有人监听 7240，连接当然失败。
+     *   百度自己的车机程序是靠 `am start -n com.baidu.carlife/...` 把手机端拉起来的，
+     *   这一步不能省。
+     *
+     * 交给 adbp_launch_phone_app：它会先 `cmd package resolve-activity` 问 Android
+     * 要启动项（对"无界面组件"也有效），再 am start，最后用 pidof 确认真的起来了 ——
+     * 不是发个命令就当成功。 */
+    if (g_route == 1) {
+        char detail[256];
+        int  k;
+
+        for (k = 0; k < 3; k++) {          /* 最多拉 3 次，给手机留出启动时间 */
+            if (adbp_launch_phone_app(detail, (int)sizeof(detail)) == 0)
+                break;
+            {
+                WCHAR t[420], w[280];
+                int n;
+                for (n = 0; n < 255 && detail[n]; n++)
+                    w[n] = (WCHAR)(unsigned char)detail[n];
+                w[n] = 0;
+                wsprintfW(t, (k < 2) ? L"正在启动手机端的智能车载…  %s"
+                                     : L"手机端没能启动：%s", w);
+                set_status(t);
+            }
+            if (k < 2 && !g_quit)
+                Sleep(3000);
+        }
+    }
+
+    /* 手机端起来之后还要一两秒才会开始监听 7240，所以这里必须重试，
+     * 不能连一次不通就放弃。 */
+    {
+        int k;
+        cmd = INVALID_SOCKET;
+        for (k = 0; k < 10; k++) {
+            cmd = connect_cmd();
+            if (cmd != INVALID_SOCKET)
+                break;
+            if (g_quit)
+                return;
+            if (g_route == 1) {
+                WCHAR t[220];
+                wsprintfW(t, L"手机端已启动，正在等它开始监听 7240（第 %d 次）…", k + 1);
+                set_status(t);
+            }
+            Sleep(1000);
+        }
+    }
     if (cmd == INVALID_SOCKET) {
         set_status(g_route == 1
-                   ? L"ADB 转发已就绪，但本机端口连不上（转发线程可能已退出）"
+                   ? L"ADB 已就绪，但手机端始终没在监听 7240 —— 手机上可能弹了权限框，请点「允许」"
                    : L"没找到手机（7240 端口都不通）");
         return;
     }
@@ -738,8 +847,16 @@ int WINAPI WinMain(HINSTANCE hi, HINSTANCE hp, LPWSTR cmdline, int show)
     if (WSAStartup(MAKEWORD(2, 2), &wsa) != 0) {
         set_status(L"WSAStartup 失败：车机没有 ws2 网络栈");
     } else {
-        run_session();
-        WSACleanup();
+        /* ⚠ 连接过程必须放后台线程。
+         *   原来 run_session() 直接在主线程跑，而它里面有等待用户的循环
+         *   （等插线、等手机点「允许 USB 调试」）—— 主线程一被占住，
+         *   窗口连一次 WM_PAINT 都处理不了，
+         *   「请插 USB 线」「请打开 USB 调试」这类提示【一个字都显示不出来】，
+         *   用户根本不知道要干什么。放后台线程后提示才能实时更新。 */
+        DWORD tid = 0;
+        g_hthr = CreateThread(0, 0, session_thread, 0, 0, &tid);
+        if (!g_hthr)
+            run_session();               /* 开不出线程就退回老办法，至少还能跑 */
     }
 
     /* 留在窗口里，让用户看清最后的状态 */
