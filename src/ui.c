@@ -238,7 +238,11 @@ static void button_rect(int which, const RECT *rc, RECT *out)
     }
     ReleaseDC(0, dc);
 
-    x = rc->right - px(UI_PAD);
+    {
+        int cr;
+        content_left(rc, &cr);      /* 和正文共用同一条右边距 */
+        x = cr;
+    }
     for (i = 0; i < 3; i++) {
         if (order[i] == which) {
             out->right = x;
@@ -277,24 +281,29 @@ void ui_paint_connect(HDC dc, const RECT *rc)
 {
     RECT r;
     int i, y, tracks, block, top;
-    int pad = px(UI_PAD);
+    int cl2 = 0;
 
     /* 底 */
     FillRect(dc, rc, g_br_bg);
 
-    /* 顶栏：左边标题，右边提示日志在哪 */
-    r = *rc; r.bottom = r.top + px(UI_BAR_H);
-    r.left = pad;
-    text(dc, g_f_bar, L"CarLife 车机端", &r, UI_MUTED,
-         DT_LEFT | DT_VCENTER | DT_SINGLELINE);
+    /* 顶栏：左边标题，右边提示日志在哪。
+     * ⚠ 左右边距一律走【内容列】，不能再单独用 pad ——
+     *   否则标题和正文会各走一条左边距，一眼就看得出不对齐。 */
     {
-        const WCHAR *lg = L"运行日志：carlife-log.txt";
-        int n = 0; while (lg[n]) n++;
-        r.left = rc->right - pad - px(7) * n / 2;
-        text(dc, g_f_bar, lg, &r, UI_HINT,
-             DT_RIGHT | DT_VCENTER | DT_SINGLELINE);
+        int cr, cl = content_left(rc, &cr);
+        r = *rc; r.bottom = r.top + px(UI_BAR_H);
+        r.left = cl; r.right = cr - px(170);
+        text(dc, g_f_bar, L"CarLife 车机端", &r, UI_MUTED,
+             DT_LEFT | DT_VCENTER | DT_SINGLELINE);
+
+        {
+            const WCHAR *lg = L"运行日志：carlife-log.txt";
+            r.left = cr - px(170); r.right = cr;
+            text(dc, g_f_bar, lg, &r, UI_HINT,
+                 DT_RIGHT | DT_VCENTER | DT_SINGLELINE);
+        }
+        hr(dc, cl, rc->top + px(UI_BAR_H), cr, UI_RULE);
     }
-    hr(dc, pad, rc->top + px(UI_BAR_H), rc->right - pad, UI_RULE);
 
     /* 内容块整体垂直居中：先算总高 */
     tracks = UI_STEPS * px(UI_STEP_H);
@@ -306,18 +315,21 @@ void ui_paint_connect(HDC dc, const RECT *rc)
 
     /* 主标题 / 副标题 */
     y = top;
-    if (g_head1[0]) {
+    {
         int cr;
-        int cl2 = content_left(rc, &cr);
-        r = *rc; r.left = cl2; r.right = cr;
+        cl2 = content_left(rc, &cr);
+    }
+    if (g_head1[0]) {
+        int cr, cl2b = content_left(rc, &cr);
+        r = *rc; r.left = cl2b; r.right = cr;
         r.top = y; r.bottom = y + px(UI_HEAD_H);
         text(dc, g_f_head, g_head1, &r, UI_TEXT,
              DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS);
     }
     y += px(UI_HEAD_H) + px(UI_SUB_GAP);
     if (g_head2[0]) {
-        int cr, cl2 = content_left(rc, &cr);
-        r = *rc; r.left = cl2; r.right = cr;
+        int cr, cl2b = content_left(rc, &cr);
+        r = *rc; r.left = cl2b; r.right = cr;
         r.top = y; r.bottom = y + px(UI_SUB_H);
         text(dc, g_f_sub, g_head2, &r, UI_MUTED,
              DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS);
@@ -383,15 +395,9 @@ void ui_paint_connect(HDC dc, const RECT *rc)
     }
 
     /* 底栏 */
-    hr(dc, pad, rc->bottom - px(UI_BAR_H), rc->right - pad, UI_RULE);
     {
-        RECT br = *rc;
-        br.left = pad;
-        br.right = rc->right - px(UI_PAD) - px(240);
-        br.top = rc->bottom - px(UI_BAR_H);
-        br.bottom = rc->bottom;
-        if (g_foot[0] == 0)
-            text(dc, g_f_bar, L"", &br, UI_MUTED, DT_LEFT | DT_VCENTER | DT_SINGLELINE);
+        int cr, cl = content_left(rc, &cr);
+        hr(dc, cl, rc->bottom - px(UI_BAR_H), cr, UI_RULE);
     }
 }
 
@@ -403,12 +409,14 @@ void ui_paint_statusbar(HDC dc, const RECT *rc)
     int i;
     static const int ids[3] = { UI_BTN_TOUCH, UI_BTN_RES, UI_BTN_EXIT };
 
+    int cr, cl;
     bar.top = rc->bottom - px(UI_BAR_H);
     FillRect(dc, &bar, g_br_panel);
-    hr(dc, 0, bar.top, rc->right, UI_RULE);
+    cl = content_left(rc, &cr);
+    hr(dc, cl, bar.top, cr, UI_RULE);
 
     /* 左边：统计（由 viewer 通过 ui_footline 传进来）*/
-    r = bar; r.left = px(UI_PAD) - px(12);
+    r = bar; r.left = cl; r.right = cr - px(220);
     text(dc, g_f_bar, g_foot, &r, UI_MUTED,
          DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS);
 
