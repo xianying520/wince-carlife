@@ -15,6 +15,7 @@
 #include "display.h"
 #include "adbproxy.h"
 #include "third_party/nanojpeg.h"
+#include "cllog.h"
 #ifdef HAS_H264
 #include "h264dec.h"
 #endif
@@ -91,14 +92,31 @@ static int              g_adb_ok     = 0;
 static char             g_adb_reason[256] = "";
 
 /* ── 状态栏 ── */
+/* 宽字符 → ANSI，只为了写日志（日志文件是 UTF-8 的 ASCII 子集部分＋中文）。
+ * 手写而不用 WideCharToMultiByte：本工具链的 coredll 上那些转换函数不一定有。 */
+static void w2a_log(const WCHAR *w, char *a, int cap)
+{
+    int i;
+    if (cap <= 0) return;
+    for (i = 0; i < cap - 1 && w[i]; i++)
+        a[i] = (char)(w[i] < 128 ? w[i] : '?');
+    a[i] = 0;
+}
+
 static void set_status(const WCHAR *s)
 {
     int i;
+    char a[300];
     for (i = 0; i < 250 && s[i]; i++)
         g_status[i] = s[i];
     g_status[i] = 0;
     if (g_hwnd)
         InvalidateRect(g_hwnd, 0, FALSE);
+    /* ⚠ 屏幕上显示什么，日志里就原样记一份。
+     *   用户是「拍屏幕」+「带日志」两条线索一起给我，
+     *   两边必须能对上，否则没法互相印证。 */
+    w2a_log(s, a, (int)sizeof(a));
+    cl_log("屏幕 | %s", a);
 }
 
 /* ── 把一帧画出来 ── */
@@ -176,8 +194,20 @@ static int show_h264(const unsigned char *buf, int len)
 
     if (r < 0) {
         g_miss++;
-        if (g_miss == 3)
-            set_status(L"H.264 解码出错（码流可能不是 Baseline profile）");
+        if (g_miss == 1 || g_miss == 3 || g_miss == 30)
+            cl_log("H.264 解码出错（返回 %d），累计失败 %d 次；解码器日志：%s",
+                   r, g_miss, h264dec_log(g_h264));
+        if (g_miss == 3) {
+            WCHAR t2[260];
+            WCHAR wl[200];
+            const char *lg = h264dec_log(g_h264);
+            int q;
+            for (q = 0; q < 190 && lg[q]; q++)
+                wl[q] = (WCHAR)(unsigned char)lg[q];
+            wl[q] = 0;
+            wsprintfW(t2, L"H.264 解码出错：%s", wl);
+            set_status(t2);
+        }
         return 1;
     }
 
@@ -190,6 +220,13 @@ static int show_h264(const unsigned char *buf, int len)
         g_miss = 0;
         if (!g_h_reported) {
             g_h_reported = 1;
+            if (g_shown == 1) {
+                cl_log_stage(8, 8, "画面已经出来（首次成功解码并显示）");
+            }
+            cl_log("   H.264 出画: %dx%d  profile=%d(%s)  切帧识别=%s",
+                   w, h, h264dec_profile(g_h264),
+                   h264dec_profile_name(h264dec_profile(g_h264)),
+                   h264dec_format_name(h264dec_format(g_h264)));
             wsprintfW(t, L"H.264 %dx%d  第 %d 帧  profile=%d",
                       w, h, g_frames, h264dec_profile(g_h264));
             set_status(t);
@@ -203,6 +240,16 @@ static int show_h264(const unsigned char *buf, int len)
      * 万一是 Main/High profile，h264bsd 解不了，这句话就是唯一线索。 */
     if (!g_h_reported && h264dec_width(g_h264) > 0) {
         g_h_reported = 1;
+        cl_log("H.264 SPS 已识别: %dx%d  profile=%d(%s)  切帧识别=%s",
+               h264dec_width(g_h264), h264dec_height(g_h264),
+               h264dec_profile(g_h264),
+               h264dec_profile_name(h264dec_profile(g_h264)),
+               h264dec_format_name(h264dec_format(g_h264)));
+        if (h264dec_profile(g_h264) != 66 && h264dec_profile(g_h264) != 0) {
+            cl_log("   ⚠⚠ 关键问题：手机的编码 profile 不是 Baseline(66)。");
+            cl_log("       本项目用的解码器 h264bsd 只支持 Baseline，");
+            cl_log("       这一条就是黑屏的原因。请把这一行发给开发者。");
+        }
         wsprintfW(t, L"H.264 已识别 SPS：%dx%d  profile=%d（h264bsd 只吃 Baseline=66）",
                   h264dec_width(g_h264), h264dec_height(g_h264),
                   h264dec_profile(g_h264));
@@ -216,6 +263,12 @@ static void show_frame(const unsigned char *buf, int len)
 {
     int r;
 
+    /* ⚠ 不管解不解得开，先把收到的【原始字节】存一份（最多 256KB）。
+     *   拿回来我就能在电脑上离线判断：到底是 JPEG 还是 H.264、
+     *   什么 profile、怎么切帧 —— 这些靠猜永远猜不准，
+     *   靠这段原始数据一眼就能看出来。这是最有价值的一个文件。 */
+    cl_log_dumpfile("video-raw.bin", buf, len);
+
     if (len >= 2 && buf[0] == 0xFF && buf[1] == 0xD8) {
         /* JPEG */
         njInit();
@@ -223,6 +276,8 @@ static void show_frame(const unsigned char *buf, int len)
         if (r != NJ_OK) {
             njDone();
             g_miss++;
+            if (g_miss == 1)
+                cl_log("JPEG 解码失败（njDecode 返回 %d），本帧 %d 字节", r, len);
             return;
         }
         if (disp_init(&g_disp, njGetWidth(), njGetHeight()) != 0) {
@@ -237,6 +292,10 @@ static void show_frame(const unsigned char *buf, int len)
         g_decoded++;
         g_shown++;
         g_miss = 0;
+        if (g_shown == 1) {
+            cl_log_stage(8, 8, "画面已经出来（首次成功解码并显示）");
+            cl_log("   格式=JPEG  尺寸=%dx%d", njGetWidth(), njGetHeight());
+        }
         if (g_hwnd)
             InvalidateRect(g_hwnd, 0, FALSE);
     } else {
@@ -551,6 +610,9 @@ static int open_transport(void)
             set_status(t);
         }
 
+        if (tries == 0)
+            cl_log_stage(1, 8, "打开 ADB 设备 / ADB 认证 / 建立端口转发");
+
         if (adbp_start(svc, 3, ports, reason, (int)sizeof(reason)) == 0) {
             g_ip         = htonl(0x7F000001UL);   /* 连本机，端口已被转到手机上 */
             g_port_cmd   = ports[0];
@@ -558,8 +620,20 @@ static int open_transport(void)
             g_port_touch = ports[2];
             g_route      = 1;
             g_adb_ok     = 1;
+            cl_log_step("ADB 设备打开 + 认证 + 端口转发", 1, 0);
+            cl_log("   本地转发端口: CMD=%u  VIDEO=%u  TOUCH=%u",
+                   (unsigned)ports[0], (unsigned)ports[1], (unsigned)ports[2]);
+            cl_log("   接下来连的是 127.0.0.1:%u（数据经 ADB 隧道到手机）",
+                   (unsigned)ports[0]);
             return 0;
         }
+
+        cl_log_step("ADB 设备打开 + 认证 + 端口转发", 0, reason);
+        cl_log("   第 %d 次尝试失败。常见原因：",
+               tries + 1);
+        cl_log("     · 手机没插线 / 线只充电不传数据 / 插的不是支持数据的 USB 口");
+        cl_log("     · 手机上没点「允许 USB 调试」");
+        cl_log("     · 车机系统里没有 ADB 驱动（ADB1: 这个设备打不开）");
 
         /* ADB 不通 —— 把原因留着，这是现场排查最关键的信息。
          * ⚠ 这里不能用 lstrcpynA：本工具链的 coredll 里只有 Unicode 版的
@@ -664,9 +738,26 @@ static void run_session(void)
         char detail[256];
         int  k;
 
+        cl_log_stage(2, 8, "拉起手机端智能车载（ADB shell）");
+        {
+            const char *pk = adbp_phone_packages();
+            if (pk && pk[0]) {
+                cl_log("   手机里的包名清单（原样记录，供离线核对）：");
+                cl_log("   ──────────── 8< ────────────");
+                cl_log("%s", pk);
+                cl_log("   ──────────── >8 ────────────");
+            } else {
+                cl_log("   （还没拿到包名清单）");
+            }
+        }
+
         for (k = 0; k < 3; k++) {          /* 最多拉 3 次，给手机留出启动时间 */
-            if (adbp_launch_phone_app(detail, (int)sizeof(detail)) == 0)
+            if (adbp_launch_phone_app(detail, (int)sizeof(detail)) == 0) {
+                cl_log_step("拉起手机端智能车载", 1, 0);
+                cl_log("   %s", detail);
                 break;
+            }
+            cl_log_step("拉起手机端智能车载", 0, detail);
             {
                 WCHAR t[420], w[280];
                 int n;
@@ -684,13 +775,18 @@ static void run_session(void)
 
     /* 手机端起来之后还要一两秒才会开始监听 7240，所以这里必须重试，
      * 不能连一次不通就放弃。 */
+    cl_log_stage(3, 8, "连接控制通道（经 ADB 转发到手机的 7240）");
     {
         int k;
         cmd = INVALID_SOCKET;
         for (k = 0; k < 10; k++) {
             cmd = connect_cmd();
-            if (cmd != INVALID_SOCKET)
+            if (cmd != INVALID_SOCKET) {
+                cl_log_step("连上控制通道 7240", 1, 0);
+                cl_log("   第 %d 次尝试成功", k + 1);
                 break;
+            }
+            cl_log("   第 %d 次连 7240 不通（手机端可能还没开始监听）", k + 1);
             if (g_quit)
                 return;
             if (g_route == 1) {
@@ -702,6 +798,12 @@ static void run_session(void)
         }
     }
     if (cmd == INVALID_SOCKET) {
+        cl_log_step("连上控制通道 7240", 0,
+                    "连了 10 次都不通，手机端始终没监听");
+        cl_log("   ⚠ 到这里就卡住了。可能原因：");
+        cl_log("     · 手机端智能车载没被拉起来（看上面一阶段的结果）");
+        cl_log("     · 手机上弹了权限框没点「允许」");
+        cl_log("     · 手机的智能车载不认这种连接方式（有的机型只支持无线）");
         set_status(g_route == 1
                    ? L"ADB 已就绪，但手机端始终没在监听 7240 —— 手机上可能弹了权限框，请点「允许」"
                    : L"没找到手机（7240 端口都不通）");
@@ -711,10 +813,17 @@ static void run_session(void)
                ? L"已通过 ADB 直连手机，正在握手 ..."
                : L"已通过 USB 网络共享连上手机，正在握手 ...");
 
+    cl_log_stage(4, 8, "CarLife 协议握手（问手机支持哪个协议版本）");
     {
         int match = -1;
         unsigned long reply = 0;
         st = cl_handshake(cmd, &match, &reply);
+        if (st == CL_OK) {
+            cl_log_step("协议握手", 1, 0);
+            cl_log("   手机回的版本匹配状态 = %d，原始值 = %lu", match, reply);
+        } else {
+            cl_log_step("协议握手", 0, "手机没回应协议版本");
+        }
         if (st != CL_OK) {
             WCHAR t[200];
             wsprintfW(t, L"握手失败（%d）—— 手机没回应协议版本", st);
@@ -729,11 +838,14 @@ static void run_session(void)
     }
     g_cmd = cmd;
 
+    cl_log_stage(5, 8, "打开视频通道（8240）");
     g_vid = cl_connect(g_ip, (int)g_port_vid, 2000);
     if (g_vid == INVALID_SOCKET) {
+        cl_log_step("打开视频通道 8240", 0, "连不上");
         set_status(L"视频通道 8240 连不上");
         return;
     }
+    cl_log_step("打开视频通道 8240", 1, 0);
 
     /* 参考实现要求：每个通道使用前都要重发一次协议版本。 */
     cl_resend_version(cmd);
@@ -741,7 +853,10 @@ static void run_session(void)
     /* 这三个都走 CMD 通道（已由参考源码证实：
      * 它们是 CCmdChannelModule 的成员方法，不是视频通道模块的），
      * 所以只需要传控制 socket。 */
+    cl_log_stage(6, 8, "向手机请求画面参数（分辨率 / 帧率 / 编码格式）");
     load_preset();
+    cl_log("   本次请求 %dx%d @ %d 帧",
+           g_presets[g_preset].w, g_presets[g_preset].h, g_presets[g_preset].fps);
     if (cl_send_video_encoder_init(cmd, g_presets[g_preset].w,
                                    g_presets[g_preset].h,
                                    g_presets[g_preset].fps) != CL_OK) {
@@ -783,6 +898,13 @@ static void run_session(void)
 
         r = cl_recv_video(g_vid, &ts, &vt, g_rx, g_rxcap, &len, 20);
         if (r == CL_OK) {
+            if (g_frames == 0) {
+                cl_log_stage(7, 8, "开始接收画面 —— 后面就看画面能不能出来了");
+                cl_log("   第一帧 %d 字节", len);
+                /* 首帧的头几十个字节是最关键的证据：能直接看出
+                 * 是 JPEG 还是 H.264、什么 profile、怎么切帧。 */
+                cl_log_hex("首帧头部", g_rx, (len < 64) ? len : 64);
+            }
             g_frames++;
             show_frame(g_rx, len);
             if (g_frames % 5 == 0) {
@@ -795,10 +917,17 @@ static void run_session(void)
                     set_status(t);
                 }
             }
+            /* 每 50 帧往日志里记一行，用来判断"到底有没有在动、丢多少" */
+            if (g_frames % 50 == 0) {
+                cl_log("收帧统计: 共 %d 帧 / 解码成功 %d / 显示 %d / 连续失败 %d / 约 %d 帧每秒",
+                       g_frames, g_decoded, g_shown, g_miss, g_fps);
+            }
         } else if (r == CL_ERR_TIMEOUT) {
             continue;                      /* 正常：暂时没数据 */
         } else {
             WCHAR t[200];
+            cl_log_step("接收画面", 0, "收帧通道中断");
+            cl_log("   错误码 %d，已经收了 %d 帧（解码成功 %d）", r, g_frames, g_decoded);
             wsprintfW(t, L"收帧中断（错误 %d），已收 %d 帧", r, g_frames);
             set_status(t);
             return;
@@ -814,6 +943,12 @@ int WINAPI WinMain(HINSTANCE hi, HINSTANCE hp, LPWSTR cmdline, int show)
     MSG msg;
 
     (void)hp; (void)cmdline; (void)show;
+
+    /* ⚠ 日志要在最开头就打开 —— 后面任何一步出错都得记下来。
+     *   打不开也要继续跑（用户可能把程序放在只读目录），只是没日志而已。 */
+    if (cl_log_open() != 0) {
+        /* 一个地方都写不进去：照样跑，但屏幕上要说清楚 */
+    }
 
     g_rxcap = RX_CAP;
     g_rx = (unsigned char *)malloc(g_rxcap);
@@ -848,6 +983,35 @@ int WINAPI WinMain(HINSTANCE hi, HINSTANCE hp, LPWSTR cmdline, int show)
     ShowWindow(g_hwnd, SW_SHOW);
     UpdateWindow(g_hwnd);
 
+    /* ── 环境信息：排查第一眼要看的几项 ── */
+    cl_log("屏幕分辨率: %dx%d", rc.right, rc.bottom);
+    cl_log("等待手机总时长: %d 秒", WAIT_SECS);
+    cl_log("日志文件路径: %s", cl_log_path());
+    cl_log("");
+
+    /* 把日志路径在屏幕上亮几秒 —— 用户得知道去哪儿拿这个文件 */
+    {
+        WCHAR t[300], w[260];
+        int q;
+        const char *pp = cl_log_path();
+        for (q = 0; q < 250 && pp[q]; q++) w[q] = (WCHAR)(unsigned char)pp[q];
+        w[q] = 0;
+        if (pp[0]) {
+            wsprintfW(t, L"日志文件：%s", w);
+            set_status(t);
+            {
+                int w8;
+                for (w8 = 0; w8 < 30 && !g_quit; w8++) {
+                    MSG m2;
+                    while (PeekMessageW(&m2, 0, 0, 0, PM_REMOVE)) {
+                        TranslateMessage(&m2); DispatchMessageW(&m2);
+                    }
+                    Sleep(100);
+                }
+            }
+        }
+    }
+
     if (WSAStartup(MAKEWORD(2, 2), &wsa) != 0) {
         set_status(L"WSAStartup 失败：车机没有 ws2 网络栈");
     } else {
@@ -869,11 +1033,18 @@ int WINAPI WinMain(HINSTANCE hi, HINSTANCE hp, LPWSTR cmdline, int show)
         DispatchMessageW(&msg);
     }
 
+    cl_log("");
+    cl_log("=== 收尾 ===");
+    cl_log("总计: 收到 %d 帧 / 解码成功 %d / 显示 %d", g_frames, g_decoded, g_shown);
+    cl_log("日志文件: %s", cl_log_path());
+    cl_log("请把【整个文件夹】拷回来（日志 + video-raw.bin）");
+
     if (g_adb_ok) adbp_stop();          /* 关掉转发线程并释放 ADB 设备 */
     if (g_cmd   != INVALID_SOCKET) closesocket(g_cmd);
     if (g_vid   != INVALID_SOCKET) closesocket(g_vid);
     if (g_touch != INVALID_SOCKET) closesocket(g_touch);
     disp_free(&g_disp);
     if (g_rx) free(g_rx);
+    cl_log_close();
     return 0;
 }
