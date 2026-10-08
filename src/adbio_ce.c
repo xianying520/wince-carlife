@@ -1,5 +1,6 @@
 /* adbio_ce.c — 见 adbio_ce.h。 */
 #include "adbio_ce.h"
+#include "cllog.h"
 
 #include <string.h>
 #include <stdio.h>
@@ -88,6 +89,20 @@ int adbio_ce_open(WCHAR *out_name, int name_cap, char *reason, int reason_cap)
     for (i = 0; i < (int)(sizeof(g_cands) / sizeof(g_cands[0])); i++) {
         HANDLE h = CreateFileW(g_cands[i], GENERIC_READ | GENERIC_WRITE,
                                0, NULL, OPEN_EXISTING, 0, NULL);
+        {
+            /* 把「试了哪个 ADB 设备名、成没成」记进日志 ——
+             * 这是车机上最容易卡住的一步，而光看屏幕只知道"打不开"。 */
+            char nm[32];
+            int q;
+            for (q = 0; q < 31 && g_cands[i][q]; q++)
+                nm[q] = (char)g_cands[i][q];
+            nm[q] = 0;
+            if (h != INVALID_HANDLE_VALUE)
+                cl_log("ADB 设备已打开: %s", nm);
+            else
+                cl_log("ADB 设备 %s 打不开（错误 %lu）", nm,
+                       (unsigned long)GetLastError());
+        }
         if (h != INVALID_HANDLE_VALUE) {
             g_h = h;
             w_copy(g_name, g_cands[i], 64);
