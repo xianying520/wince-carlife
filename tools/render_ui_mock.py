@@ -88,10 +88,11 @@ def render(state, path, C, G, sw=800, sh=480):
         return y + h // 2
 
     # ── 顶栏 ──
-    text_at(pad, vcenter(0, barh), "CarLife 车机端", f_bar, C["UI_MUTED"], "lm")
-    text_at(sw - pad, vcenter(0, barh), "运行日志：carlife-log.txt", f_bar,
+    tcl, tcr = content_cols()
+    text_at(tcl, vcenter(0, barh), "CarLife 车机端", f_bar, C["UI_MUTED"], "lm")
+    text_at(tcr, vcenter(0, barh), "运行日志：carlife-log.txt", f_bar,
             C["UI_HINT"], "rm")
-    d.rectangle([pad, barh, sw - pad - 1, barh], fill=C["UI_RULE"])
+    d.rectangle([tcl, barh, tcr - 1, barh], fill=C["UI_RULE"])
 
     # ── 内容块垂直居中 ──
     tracks = G["UI_STEPS"] * px(G["UI_STEP_H"])
@@ -166,8 +167,8 @@ def render(state, path, C, G, sw=800, sh=480):
                     C["UI_MUTED"], "la")
 
     # ── 底栏 ──
-    d.rectangle([pad, sh - barh, sw - pad - 1, sh - barh], fill=C["UI_RULE"])
-    x = sw - pad
+    d.rectangle([tcl, sh - barh, tcr - 1, sh - barh], fill=C["UI_RULE"])
+    x = tcr
     for lbl in reversed(state["buttons"]):
         w = int(d.textlength(lbl, font=f_bar)) + 2 * px(G["UI_BTN_PAD"])
         w = max(w, px(46))
@@ -196,12 +197,13 @@ def render_mirror(path, C, G, sw=800, sh=480):
            fill=(120, 140, 170))
 
     barh = px(G["UI_BAR_H"])
+    mcl, mcr = content_cols()
     d.rectangle([0, sh - barh, sw, sh], fill=C["UI_PANEL"])
-    d.rectangle([0, sh - barh, sw, sh - barh], fill=C["UI_RULE"])
+    d.rectangle([mcl, sh - barh, mcr - 1, sh - barh], fill=C["UI_RULE"])
     f_bar = pick_font(px(G["UI_F_BAR"]))
-    d.text((px(G["UI_PAD"]) - px(12), sh - barh // 2), "480x272  15 帧/秒  已收 1234 帧",
+    d.text((mcl, sh - barh // 2), "480x272  15 帧/秒  已收 1234 帧",
            font=f_bar, fill=C["UI_MUTED"], anchor="lm")
-    x = sw - px(G["UI_PAD"])
+    x = mcr
     for lbl in ["退出", "480x272", "触摸 A"]:
         w = int(d.textlength(lbl, font=f_bar)) + 2 * px(G["UI_BTN_PAD"])
         w = max(w, px(46))
