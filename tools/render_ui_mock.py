@@ -37,7 +37,11 @@ def parse_layout():
     ):
         col[n] = (int(r, 16), int(g, 16), int(b, 16))
     num = {}
-    for n, v in re.findall(r"#define\s+(UI_[A-Z_0-9]+)\s+(\d+)\s*$", src, re.M):
+    # ⚠ 行尾可能跟着 /* 中文注释 */ —— 不加这段可选注释，UI_PAD 之类的
+    #   常量会整片解析不出来（踩过一次：KeyError: 'UI_PAD'）
+    for n, v in re.findall(
+        r"#define\s+(UI_[A-Z_0-9]+)\s+(\d+)\s*(?:/\*[^*]*\*/)?\s*$", src, re.M
+    ):
         if n not in col:
             num[n] = int(v)
     return col, num
