@@ -4,7 +4,12 @@
 思路和本仓库的 make_test_jpeg.py 完全一致：**内容必须完全可预测**，
 这样解码结果就能硬断言，而不是"看着还行"。
 
-每个case都是一帧纯色图，编码成 Baseline profile：
+每个case都是【三帧】纯色图，编码成 Baseline profile。
+
+为什么要三帧而不是一帧：h264bsd 只在【访问单元边界】才吐出上一帧
+（源码里 *readBytes = 0 那个分支），所以单帧流解完也不会交帧。
+三帧能稳定出 2 帧，足够断言。副作用是永远差一帧延迟，约 70~100ms，
+对车机投屏无所谓。
   - 纯色 → 解码后每个像素都该是那个颜色（YUV420 有量化误差，给容差）
   - 红/绿/蓝分开测 → **能抓出 BGRA / RGBA 通道顺序搞反**
   - 尺寸挑一个能整除16的、一个不能的 → **能逼出裁剪路径**
@@ -28,8 +33,8 @@ def main():
         dst = os.path.join(OUT, name + ".h264")
         cmd = [
             "ffmpeg", "-y", "-loglevel", "error",
-            "-f", "lavfi", "-i", "color=c=%s:s=%dx%d" % (color, w, h),
-            "-frames:v", "1",
+            "-f", "lavfi", "-i", "color=c=%s:s=%dx%d:r=15" % (color, w, h),
+            "-frames:v", "3",
             "-pix_fmt", "yuv420p",
             "-c:v", "libx264", "-profile:v", "baseline", "-level", "3.0",
             "-x264-params", "keyint=1:min-keyint=1:scenecut=0",
