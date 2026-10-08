@@ -114,10 +114,18 @@ jobs:
           echo "h264dec.c 已为 ARM/WinCE 编译通过"
           arm-mingw32ce-nm /tmp/arm/h264dec.o 2>/dev/null | grep -E ' T h264dec_' || true
 
-      - name: 链接成一个 ARM 静态库（验证符号闭合）
+      - name: 打包成 ARM 静态库
         run: |
           export PATH="$HOME/tc/cegcc/bin:$PATH"
           arm-mingw32ce-ar rcs /tmp/libh264ce.a /tmp/arm/*.o
-          echo "静态库内容:"
-          arm-mingw32ce-nm /tmp/libh264ce.a 2>/dev/null | grep -c ' T ' || true
           ls -l /tmp/libh264ce.a
+
+      # 交叉编译只做 -c 再 ar 打包时【从不做符号解析】，所以「函数名写错」
+      # 这类错会一路漏到车机上才炸。这一步专门堵这个洞。
+      # 实锤：h264dec.c 里把 h264dec_profile_name 写成了 h264bsd_profile_name，
+      # ARM 那一路全绿，主机链接时才暴露。
+      - name: 检查符号闭合
+        run: |
+          export PATH="$HOME/tc/cegcc/bin:$PATH"
+          arm-mingw32ce-nm /tmp/libh264ce.a > /tmp/nm.txt
+          python3 scripts/check_arm_symbols.py /tmp/nm.txt
