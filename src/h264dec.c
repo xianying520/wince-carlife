@@ -28,6 +28,7 @@ struct H264DEC {
     int            errors;
     u32            picId;
     int            profileWarned;
+    int            hdrReady;
     char           log[128];
 };
 
@@ -132,6 +133,20 @@ static int acc_push(H264DEC *d, const unsigned char *p, int n)
 
 static const unsigned char START4[4] = { 0, 0, 0, 1 };
 
+/* 往累积缓冲追加【一个完整 NAL】。
+ * 不变量：缓冲只要非空，就【一定以起始码结尾】。
+ * 于是下一个 NAL 直接接上即可，绝不会出现「两个起始码挨在一起」那种空 NAL
+ * —— 之前前后各补一个起始码，就踩了这个坑，AVCC/裸NAL 两路全部报解码错误。 */
+static int push_nal(H264DEC *d, const unsigned char *p, int n)
+{
+    if (d->accLen == 0) {
+        if (!acc_push(d, START4, 4)) return 0;   /* 空缓冲才需要前导起始码 */
+    }
+    if (!acc_push(d, p, n))          return 0;
+    if (!acc_push(d, START4, 4))     return 0;   /* 尾随起始码 = 终止符 */
+    return 1;
+}
+
 /* AVCC：4 字节大端长度 + NAL，可能一条消息里多个，也可能被切断 */
 static int ingest_avcc(H264DEC *d, const unsigned char *p, int n)
 {
@@ -150,15 +165,10 @@ static int ingest_avcc(H264DEC *d, const unsigned char *p, int n)
         unsigned L = ((unsigned)p[i] << 24) | ((unsigned)p[i+1] << 16) |
                      ((unsigned)p[i+2] << 8) | (unsigned)p[i+3];
         if (L == 0 || L > 4u * 1024u * 1024u) {           /* 明显不是长度，当裸 NAL */
-            if (!acc_push(d, START4, 4)) return 0;
-            if (!acc_push(d, p + i, n - i)) return 0;
-            if (!acc_push(d, START4, 4)) return 0;
-            return 1;
+            return push_nal(d, p + i, n - i);
         }
         if ((int)L > n - i - 4) break;                    /* 这个 NAL 还没收齐 */
-        if (!acc_push(d, START4, 4)) return 0;
-        if (!acc_push(d, p + i + 4, (int)L)) return 0;
-        if (!acc_push(d, START4, 4)) return 0;   /* 终止符，见下面的说明 */
+        if (!push_nal(d, p + i + 4, (int)L)) return 0;
         i += 4 + (int)L;
     }
     if (i < n) {                                          /* 尾巴留到下次 */
@@ -220,6 +230,7 @@ int h264dec_feed(H264DEC *d, const unsigned char *data, int len,
                  unsigned char *out_bgra, int out_cap, int *out_w, int *out_h)
 {
     int result = H264DEC_OK;
+    int spin = 0;
 
     if (!d || !d->inited) return H264DEC_ERR_DATA;
     if (!data || len <= 0) return H264DEC_OK;
@@ -234,20 +245,32 @@ int h264dec_feed(H264DEC *d, const unsigned char *data, int len,
     if (d->fmt == H264DEC_FMT_AVCC) {
         if (!ingest_avcc(d, data, len)) return H264DEC_ERR_MEM;
     } else if (d->fmt == H264DEC_FMT_RAW) {
-        /* 一条消息就是一个完整 NAL：前面补起始码让它能起头，
-         * 后面也补一个 —— h264bsd 靠「下一个起始码」判断 NAL 在哪里结束，
-         * 末尾没有终止符它会挂进「本 NAL 未完成」状态，下一帧就对不上了。 */
-        if (!acc_push(d, START4, 4))            return H264DEC_ERR_MEM;
-        if (!acc_push(d, data, len))            return H264DEC_ERR_MEM;
-        if (!acc_push(d, START4, 4))            return H264DEC_ERR_MEM;
+        /* 一条消息 = 一个完整 NAL，交给 push_nal 处理起始码 */
+        if (!push_nal(d, data, len))            return H264DEC_ERR_MEM;
     } else {
         if (!acc_push(d, data, len))            return H264DEC_ERR_MEM;
     }
 
-    /* 3) 循环喂。h264bsd 一次吃一个 NAL，readBytes 回告吃了多少。
-     *    这里刻意用「同一个缓冲 + 只推进 accUse」的写法：
-     *    h264bsd 内部靠指针相等来判断「上次没吃完的是同一块」，
-     *    每帧都 memmove 会把指针变掉、踩进它的重入分支。 */
+    /* 3) 循环喂 h264bsd —— 这里有个踩过的坑，务必看清楚：
+     *
+     *   h264bsd 在【访问单元边界】出帧时，会把 *readBytes 置 0，并在内部记下
+     *   「当前这个 NAL 要在下一次调用里重新解」。源码原话：
+     *       / * current NAL unit should be decoded on next activation -> set
+     *          readBytes to 0 * /
+     *       *readBytes = 0;
+     *       pStorage->prevBufNotFinished = HANTRO_TRUE;
+     *
+     *   所以 readBytes == 0 有两种完全不同的含义，必须靠返回值 r 区分：
+     *       r == H264BSD_PIC_RDY → 出帧了，要用【同一个指针】再调一次，
+     *                              它会把上次没吃完的字节数还给你，接着往下走
+     *       其它                 → 数据确实不够，等下一次 feed
+     *
+     *   踩过的错：把 readBytes==0 一律当「数据不够」直接 break，
+     *   结果每一帧都在出帧那一刻被丢掉 —— 三种切帧形态全军覆没。
+     *
+     *   另外：这里刻意用「同一个缓冲 + 只推进 accUse」的写法，绝不 memmove。
+     *   h264bsd 靠【指针相等】判断「上次没吃完的是不是同一块」，
+     *   每次搬运都会把指针变掉、踩进它的重入分支。 */
     for (;;) {
         u32 readBytes = 0;
         u32 r;
@@ -268,12 +291,7 @@ int h264dec_feed(H264DEC *d, const unsigned char *data, int len,
             return H264DEC_ERR_MEM;
         }
 
-        if (readBytes == 0) {
-            /* 这个 NAL 还没收齐，等下次的字节。指针保持不变 → h264bsd 认得 */
-            break;
-        }
-        d->accUse += (int)readBytes;
-
+        /* —— 先处理「有结果」的两种返回，再看 readBytes —— */
         if (r == H264BSD_HDRS_RDY) {
             u32 cf = 0, cl = 0, cw = 0, ct = 0, ch = 0;
             d->mbw = (int)h264bsdPicWidth(d->st)  * 16;
@@ -283,25 +301,26 @@ int h264dec_feed(H264DEC *d, const unsigned char *data, int len,
             else                        { d->w = d->mbw; d->h = d->mbh; }
             d->profile = (int)h264bsdProfile(d->st);
             setlog(d, "SPS: ", d->w, "x");
-            {   /* 把高度接上去 */
-                char *p = d->log; while (*p) p++;
-                num2str(d->h, p); while (*p) p++;
-                *p = 0;
+            {
+                char *q = d->log; while (*q) q++;
+                num2str(d->h, q); while (*q) q++;
+                *q = 0;
             }
             if (d->profile != 66 && d->profile != 0 && !d->profileWarned) {
                 d->profileWarned = 1;
                 setlog(d, "profile 不支持: ", d->profile, h264dec_profile_name(d->profile));
             }
+            d->hdrReady = 1;
         }
 
         if (r == H264BSD_PIC_RDY) {
             u32 pid = 0, idr = 0, nerr = 0;
             u32 *pic = NULL, *last = NULL;
-            int lastW = 0, lastH = 0;
+            int lastW = d->mbw, lastH = d->mbh;
 
             /* 一次可能积压多帧，取最新的那一帧 */
             while ((pic = h264bsdNextOutputPictureBGRA(d->st, &pid, &idr, &nerr)) != NULL) {
-                last = pic; lastW = d->mbw; lastH = d->mbh;
+                last = pic;
             }
             if (last) {
                 int cw = d->w > 0 ? d->w : lastW;
@@ -327,10 +346,18 @@ int h264dec_feed(H264DEC *d, const unsigned char *data, int len,
             }
         }
 
+        if (readBytes == 0) {
+            /* 出帧了 → 同一指针重入一次，让 h264bsd 把上次没吃完的字节还回来。
+             * spin 是防死循环的保险：万一它一直返回 0，最多重入 8 次就退出。 */
+            if (r == H264BSD_PIC_RDY && spin++ < 8) continue;
+            break;                          /* 数据不够，等下一次 feed */
+        }
+        d->accUse += (int)readBytes;
+        spin = 0;
+
         if (d->accUse >= d->accLen) { d->accLen = 0; d->accUse = 0; }
     }
 
-    /* 全部吃完就归零，便于下次从 buf[0] 开始 */
     if (d->accUse > 0 && d->accUse >= d->accLen) { d->accLen = 0; d->accUse = 0; }
 
     return result;
