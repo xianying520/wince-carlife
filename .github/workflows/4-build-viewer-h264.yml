@@ -13,22 +13,11 @@ on:
   push:
     branches: [main, master]
     paths:
-      - 'src/viewer.c'
-      - 'src/display.c'
-      - 'src/display.h'
-      # viewer 链接了整条 ADB 栈，这些文件改了也必须重编，
-      # 否则会发出一个"用旧 ADB 逻辑编的新 viewer"——极难发现。
-      - 'src/adb.c'
-      - 'src/adb.h'
-      - 'src/adbproxy.c'
-      - 'src/adbproxy.h'
-      - 'src/adbio_ce.c'
-      - 'src/rsa.c'
-      - 'src/carlife.c'
-      - 'src/cllog.c'
-      - 'src/cllog.h'
-      - 'src/h264dec.c'
-      - 'src/h264dec.h'
+      # ⚠ 用 src/** 而不是逐个列文件。
+      #   原来逐个列，结果 ui.c / ui.h / ui_layout.h 漏在外面 ——
+      #   改了界面代码却不重编成品，会发出一个"用旧界面编的新程序"，
+      #   极难发现。这种清单一定会随文件增加而过期，索性不列了。
+      - 'src/**'
       - 'Makefile'
       - '.github/workflows/4-build-viewer-h264.yml'
   workflow_dispatch:
