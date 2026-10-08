@@ -409,10 +409,22 @@ int h264dec_feed(H264DEC *d, const unsigned char *data, int len,
         }
 
         if (readBytes == 0) {
-            /* 出帧了 → 同一指针重入一次，让 h264bsd 把上次没吃完的字节还回来。
-             * spin 是防死循环的保险：万一它一直返回 0，最多重入 8 次就退出。 */
-            if (r == H264BSD_PIC_RDY && spin++ < 8) continue;
-            break;                          /* 数据不够，等下一次 feed */
+            /* ⚠⚠ 这里踩过两次坑，务必看明白 ⚠⚠
+             *
+             * readBytes == 0 【不是】「数据不够」，而是 h264bsd 的重入约定：
+             * 「这次我什么都没吃，你用【同一个指针】再调一次」。
+             * 参数集激活（HDRS_RDY）和出帧（PIC_RDY）都会这样返回。
+             *
+             * 第一次踩：把它一律当「数据不够」直接 break → 每一帧都在出帧那一刻被丢。
+             * 第二次踩：只对 PIC_RDY 做重入，HDRS_RDY/0 仍然 break →
+             *           SPS/PPS 吃完了，后面的切片数据一个都没喂进去，一帧都不出。
+             *           实测取证：RDY/26 RDY/9 RDY/255 HDRS_RDY/0 ← 到这里就断了。
+             *
+             * 正确做法：只要 readBytes==0 就用同一指针重入。h264bsd 重入时会把
+             * 上次没吃完的字节数还回来，所以一定会前进。
+             * spin 只是防死循环的保险。 */
+            if (spin++ < 16) continue;
+            break;
         }
         d->accUse += (int)readBytes;
         spin = 0;
