@@ -53,6 +53,13 @@ int  h264dec_frames (H264DEC *d);
 const char *h264dec_format_name(int f);
 const char *h264dec_log(H264DEC *d);   /* 最近一条人话状态，直接显示到窗口 */
 
+/* 取证：h264bsdDecode 每次返回的 (返回码, 吃掉字节数) 序列。
+ * 返回长度；codes/bytes 指向内部数组（最多 80 项），不要释放。 */
+int h264dec_trace(H264DEC *d, const unsigned char **codes, const unsigned char **bytes);
+
+/* 返回码 → 人话（0=RDY 1=PIC_RDY 2=HDRS_RDY 3=ERROR 4=PARAM_SET_ERROR 5=MEMALLOC_ERROR）*/
+const char *h264dec_code_name(int c);
+
 /* 首帧前 12 字节 → 猜编码。返回 1=H.264, 2=JPEG, 0=不确定 */
 int h264dec_guess_codec(const unsigned char *p, int n);
 
