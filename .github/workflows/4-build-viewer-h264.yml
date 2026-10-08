@@ -1,0 +1,74 @@
+# ─────────────────────────────────────────────────────────────────────────────
+# 4. 编译【含 H.264 解码】的最终程序
+#
+# 和 2-build-app.yml 的区别只有一个：这个工作流会把 h264bsd 拉到
+# third_party/h264bsd，于是 viewer 会带上 H.264 解码能力（-DHAS_H264）。
+# 单独放一个工作流，是为了不动 2 号那条已经跑通的流水线。
+#
+# h264bsd 不进仓库（765 KB 第三方源码），按固定 commit 现拉，构建可复现。
+# ─────────────────────────────────────────────────────────────────────────────
+name: 4. Build viewer with H.264
+
+on:
+  push:
+    branches: [main, master]
+    paths:
+      - 'src/viewer.c'
+      - 'src/display.c'
+      - 'src/display.h'
+      - 'src/h264dec.c'
+      - 'src/h264dec.h'
+      - 'Makefile'
+      - '.github/workflows/4-build-viewer-h264.yml'
+  workflow_dispatch:
+
+env:
+  H264BSD_SHA: 42bcb5d753ad86d84903354bf3c68423c28adb7b
+
+jobs:
+  build:
+    name: 编 WinCE-CarLifeView.exe（含 H.264）
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: 下载 CeGCC 工具链
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh release download cegcc-arm \
+            --pattern 'cegcc-arm-mingw32ce.tar.gz' \
+            --dir "$RUNNER_TEMP" --clobber
+          mkdir -p "$HOME/tc"
+          tar xzf "$RUNNER_TEMP/cegcc-arm-mingw32ce.tar.gz" -C "$HOME/tc"
+          test -x "$HOME/tc/cegcc/bin/arm-mingw32ce-gcc"
+
+      - name: 按固定 commit 拉 h264bsd 到 third_party/
+        run: |
+          git clone --quiet https://github.com/oneam/h264bsd third_party/h264bsd
+          cd third_party/h264bsd
+          git checkout --quiet "$H264BSD_SHA"
+          git log --oneline -1
+          echo "源文件数: $(ls src/*.c | wc -l)"
+
+      - name: 编译 viewer（make 会自动发现 h264bsd 并打开 -DHAS_H264）
+        run: |
+          export PATH="$HOME/tc/cegcc/bin:$PATH"
+          make viewer 2>&1 | tee /tmp/build.log
+          grep -q '含' /tmp/build.log && echo "✅ 确认带上了 H.264 解码" || {
+            echo "!! 没有打开 H.264 —— 检查 third_party/h264bsd 是否存在"; exit 1; }
+
+      - name: 核对产物是 WinCE ARM PE
+        run: |
+          python3 scripts/checkpe.py build/WinCE-CarLifeView.exe
+          ls -l build/
+          echo "── 确认 H.264 符号真的链进去了 ──"
+          export PATH="$HOME/tc/cegcc/bin:$PATH"
+          arm-mingw32ce-nm build/WinCE-CarLifeView.exe | grep -c 'h264bsd' || true
+
+      - name: 上传产物
+        uses: actions/upload-artifact@v4
+        with:
+          name: wince-viewer-h264
+          path: build/WinCE-CarLifeView.exe
+          if-no-files-found: error
