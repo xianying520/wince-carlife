@@ -7,6 +7,15 @@
  * 设备读写，其余部分都用非阻塞 socket，同一个循环里驱动两边。
  */
 #include "adbproxy.h"
+
+/* 日志：只在真正上车机编的时候启用。
+ * 主机测试（-DADBP_HOST_TEST）里没有 cllog.c，所以那边宏展开成空。 */
+#ifndef ADBP_HOST_TEST
+#include "cllog.h"
+#define ADBP_LOG(...) cl_log(__VA_ARGS__)
+#else
+#define ADBP_LOG(...) ((void)0)
+#endif
 #include "adb.h"
 
 /* ── 平台层 ──
@@ -97,6 +106,10 @@ static void set_status(const char *fmt, ...)
     _vsnprintf(g_status, sizeof(g_status) - 1, fmt, ap);
     va_end(ap);
     g_status[sizeof(g_status) - 1] = 0;
+
+    /* 转发器说的每句话都进日志。这一层最容易出问题（ADB 命令、通道、端口），
+     * 现场看不出来，只有日志能带回来。主机测试里 ADBP_LOG 是空的。 */
+    ADBP_LOG("转发器 | %s", g_status);
 }
 
 static void set_nonblock(SOCKET s)
@@ -197,8 +210,10 @@ int adbp_launch_phone_app(char *detail, int cap)
 
     if (detail && cap > 0) detail[0] = 0;
 
+    ADBP_LOG("向手机发 shell: pm list packages");
     r = adb_run_shell(&g_adb, "pm list packages", buf, (int)sizeof(buf), 6000);
     if (r != 0) {
+        ADBP_LOG("   失败，返回 %d", r);
         snprintf(g_note, sizeof(g_note) - 1, "列包名失败（adb_run_shell 返回 %d）", r);
         if (detail) snprintf(detail, (size_t)cap, "%s", g_note);
         return -1;
@@ -219,10 +234,16 @@ int adbp_launch_phone_app(char *detail, int cap)
     /* ── ① 先问 Android 要启动 Activity，再 am start 指过去 ──
      * 这条路对"无界面组件"也有效，是最通用的一条。 */
     act[0] = 0;
+    ADBP_LOG("向手机发 shell: cmd package resolve-activity --brief %s", pkg);
     if (resolve_activity(pkg, act, (int)sizeof(act)) == 0) {
+        ADBP_LOG("   拿到启动项: %s", act);
         snprintf(cmd, sizeof(cmd) - 1, "am start -n %s/%s", pkg, act);
+        ADBP_LOG("向手机发 shell: %s", cmd);
         buf[0] = 0;
         adb_run_shell(&g_adb, cmd, buf, (int)sizeof(buf) - 1, 8000);
+        ADBP_LOG("   手机回: %s", buf[0] ? buf : "(空)");
+    } else {
+        ADBP_LOG("   没问到启动项，改用 monkey");
     }
 
     /* ── ② 确认在不在跑；不在就用 monkey 兜一次 ── */
@@ -230,8 +251,10 @@ int adbp_launch_phone_app(char *detail, int cap)
     if (running != 1) {
         snprintf(cmd, sizeof(cmd) - 1,
                  "monkey -p %s -c android.intent.category.LAUNCHER 1", pkg);
+        ADBP_LOG("向手机发 shell: %s", cmd);
         buf[0] = 0;
         adb_run_shell(&g_adb, cmd, buf, (int)sizeof(buf) - 1, 8000);
+        ADBP_LOG("   手机回: %s", buf[0] ? buf : "(空)");
     }
 
     /* ── ③ 再确认一次，把结果写进 detail 给人看 ──
