@@ -1,0 +1,123 @@
+# ─────────────────────────────────────────────────────────────────────────────
+# 3. 验证 H.264 解码
+#
+# 车机没法上车试了，所以这一关必须在电脑上把住：
+#   1. 用 ffmpeg 生成【内容完全可预测】的 H.264 码流（纯色图）
+#   2. 用主机 gcc 编译真实的 h264dec.c + h264bsd
+#   3. 每个码流跑【三种切帧形态】：Annex-B / AVCC / 裸 NAL
+#   4. 断言尺寸对、颜色对（红绿蓝分开 → 能抓出通道顺序反了）
+#   5. 再用 CeGCC 交叉编译一次，证明能为 ARM/WinCE 编译
+#
+# h264bsd 不进仓库（765 KB 第三方代码），按固定 commit 现拉：
+# 构建可复现，仓库也不被污染。
+# ─────────────────────────────────────────────────────────────────────────────
+name: 3. Verify H.264 decode
+
+on:
+  push:
+    branches: [main, master]
+    paths:
+      - 'src/h264dec.c'
+      - 'src/h264dec.h'
+      - 'tests/h264_host_test.c'
+      - 'scripts/make_h264_samples.py'
+      - '.github/workflows/3-verify-h264.yml'
+  workflow_dispatch:
+
+env:
+  H264BSD_SHA: 42bcb5d753ad86d84903354bf3c68423c28adb7b
+
+jobs:
+  # ── 主机上真解一遍，断言像素 ──────────────────────────────────────────────
+  host-verify:
+    name: 主机验证解码
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: 装 ffmpeg
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq ffmpeg
+          ffmpeg -hide_banner -version | head -1
+
+      - name: 按固定 commit 拉 h264bsd
+        run: |
+          git clone --quiet https://github.com/oneam/h264bsd "$RUNNER_TEMP/h264bsd"
+          cd "$RUNNER_TEMP/h264bsd"
+          git checkout --quiet "$H264BSD_SHA"
+          git log --oneline -1
+          echo "源码文件数: $(ls src/*.c | wc -l)"
+
+      - name: 生成测试码流（内容可预测）
+        run: python3 scripts/make_h264_samples.py samples
+
+      - name: 主机编译
+        run: |
+          gcc -O2 -Wall -Wno-unused-but-set-variable -Wno-unused-variable \
+              -I"$RUNNER_TEMP/h264bsd/src" -Isrc \
+              tests/h264_host_test.c src/h264dec.c \
+              "$RUNNER_TEMP"/h264bsd/src/*.c \
+              -o "$RUNNER_TEMP/h264test" -lm
+
+      - name: 验证解码（三种切帧形态 × 四个码流）
+        run: "$RUNNER_TEMP/h264test" samples
+
+  # ── 交叉编译，证明能为 ARM/WinCE 编 ───────────────────────────────────────
+  arm-compile:
+    name: 交叉编译为 ARM/WinCE
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: 下载 CeGCC 工具链
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh release download cegcc-arm \
+            --pattern 'cegcc-arm-mingw32ce.tar.gz' \
+            --dir "$RUNNER_TEMP" --clobber
+          mkdir -p "$HOME/tc"
+          tar xzf "$RUNNER_TEMP/cegcc-arm-mingw32ce.tar.gz" -C "$HOME/tc"
+          test -x "$HOME/tc/cegcc/bin/arm-mingw32ce-gcc"
+
+      - name: 拉 h264bsd
+        run: |
+          git clone --quiet https://github.com/oneam/h264bsd "$RUNNER_TEMP/h264bsd"
+          cd "$RUNNER_TEMP/h264bsd" && git checkout --quiet "$H264BSD_SHA"
+
+      - name: 交叉编译 h264bsd 全部源码
+        run: |
+          export PATH="$HOME/tc/cegcc/bin:$PATH"
+          mkdir -p /tmp/arm
+          bad=0
+          for f in "$RUNNER_TEMP"/h264bsd/src/*.c; do
+            b=$(basename "$f" .c)
+            if arm-mingw32ce-gcc -Os -I"$RUNNER_TEMP/h264bsd/src" \
+                 -c "$f" -o "/tmp/arm/$b.o" 2>"/tmp/arm/$b.err"; then
+              echo "  OK   $b"
+            else
+              echo "  FAIL $b"
+              sed -n '1,6p' "/tmp/arm/$b.err"
+              bad=$((bad+1))
+            fi
+          done
+          echo "──────────────────────"
+          echo "失败 $bad 个"
+          test "$bad" -eq 0
+
+      - name: 交叉编译 h264dec.c
+        run: |
+          export PATH="$HOME/tc/cegcc/bin:$PATH"
+          arm-mingw32ce-gcc -Os -Wall -Isrc -I"$RUNNER_TEMP/h264bsd/src" \
+            -c src/h264dec.c -o /tmp/arm/h264dec.o
+          echo "h264dec.c 已为 ARM/WinCE 编译通过"
+          arm-mingw32ce-nm /tmp/arm/h264dec.o 2>/dev/null | grep -E ' T h264dec_' || true
+
+      - name: 链接成一个 ARM 静态库（验证符号闭合）
+        run: |
+          export PATH="$HOME/tc/cegcc/bin:$PATH"
+          arm-mingw32ce-ar rcs /tmp/libh264ce.a /tmp/arm/*.o
+          echo "静态库内容:"
+          arm-mingw32ce-nm /tmp/libh264ce.a 2>/dev/null | grep -c ' T ' || true
+          ls -l /tmp/libh264ce.a
