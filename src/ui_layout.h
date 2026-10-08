@@ -24,8 +24,12 @@
 #define UI_AMBER     RGB(0xE8,0xA3,0x3D)   /* 进行中 */
 #define UI_GREEN     RGB(0x3F,0xB9,0x50)   /* 已完成 */
 #define UI_RED       RGB(0xF8,0x51,0x49)   /* 失败 */
-#define UI_RULE      RGB(0x2A,0x31,0x3C)   /* 极细分隔线 */
-#define UI_DOT_OFF   RGB(0x39,0x41,0x4C)   /* 未开始的圆点 */
+#define UI_RULE      RGB(0x33,0x3C,0x4A)   /* 极细分隔线 */
+#define UI_DOT_OFF   RGB(0x5A,0x64,0x72)   /* 未开始的圆点（要能在白天看清，
+                                             *   原来 1.83:1 在车里等于看不见）*/
+#define UI_HINT      RGB(0x6B,0x74,0x82)   /* 顶栏最右那句提示（比 muted 再暗一点）*/
+#define UI_WASH      RGB(0x21,0x1D,0x19)   /* 进行中那一行的极淡琥珀底
+                                             *   —— 8 行长得一样，当前那步必须一眼跳出来 */
 
 /* ── 几何（按 800x480 设计，运行时按屏宽等比缩放）── */
 #define UI_BASE_W    800
@@ -43,13 +47,19 @@
 #define UI_DETAIL_GAP 20     /* 轨道 → 细节行 */
 #define UI_DETAIL_H  40      /* 细节行高 */
 
-#define UI_BTN_H     20      /* 底栏按钮高 */
+/* 内容列最大宽度。
+ * 800px 宽的屏上把文字从左铺到右，两列之间会空出一大片，读起来是两块而不是一行；
+ * 收窄到 680 并居中之后才对得上。上下两条栏仍然铺满全宽。 */
+#define UI_CONTENT_W 680
+#define UI_DETAIL_W  150     /* 右侧细节列的宽度 */
+
+#define UI_BTN_H     18      /* 底栏按钮高（26px 的栏里塞 20 太挤）*/
 #define UI_BTN_PAD   13      /* 按钮内左右留白 */
 #define UI_BTN_GAP   8       /* 按钮间距 */
 
 /* 字体像素高（CreateFontW 用负值 = 精确像素高）*/
-#define UI_F_HEAD    22
-#define UI_F_SUB     15
+#define UI_F_HEAD    26
+#define UI_F_SUB     16
 #define UI_F_STEP    14
 #define UI_F_DETAIL  13
 #define UI_F_BAR     12
