@@ -24,10 +24,10 @@
 #define UI_AMBER     RGB(0xE8,0xA3,0x3D)   /* 进行中 */
 #define UI_GREEN     RGB(0x3F,0xB9,0x50)   /* 已完成 */
 #define UI_RED       RGB(0xF8,0x51,0x49)   /* 失败 */
-#define UI_RULE      RGB(0x33,0x3C,0x4A)   /* 极细分隔线 */
+#define UI_RULE      RGB(0x39,0x42,0x4F)   /* 极细分隔线（再暗的话车里白天就没了）*/
 #define UI_DOT_OFF   RGB(0x5A,0x64,0x72)   /* 未开始的圆点（要能在白天看清，
                                              *   原来 1.83:1 在车里等于看不见）*/
-#define UI_HINT      RGB(0x6B,0x74,0x82)   /* 顶栏最右那句提示（比 muted 再暗一点）*/
+#define UI_HINT      RGB(0x78,0x83,0x91)   /* 顶栏最右那句提示（12px 小字，要够 4.5:1）*/
 #define UI_WASH      RGB(0x21,0x1D,0x19)   /* 进行中那一行的极淡琥珀底
                                              *   —— 8 行长得一样，当前那步必须一眼跳出来 */
 
