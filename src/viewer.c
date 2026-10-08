@@ -152,6 +152,8 @@ static H264DEC       *g_h264     = 0;
 static unsigned char *g_hbuf     = 0;
 static int            g_hbufcap  = 0;
 static int            g_h_reported = 0;
+static int            g_h_toobig   = 0;   /* 分辨率超出车机承受能力，已经报过了 */
+static int            g_trunc_warn = 0;   /* 视频帧被缓冲截断，已经报过了 */
 
 /* 按 SPS 报出来的尺寸准备输出缓冲；SPS 没到之前先给一个 800x480 的档。 */
 static int h264_ensure_buf(void)
@@ -188,6 +190,28 @@ static int show_h264(const unsigned char *buf, int len)
         set_status(L"H.264 输出缓冲分配失败（内存不够）");
         return 1;
     }
+
+    /* ⚠ 分辨率上限。h264bsd 的参考帧缓冲按「每帧 宽×高×1.5」算：
+     *   480x272 一帧约 196KB，没事；1080p 一帧就 3MB，几帧就能把老车机的内存吃光。
+     *   内存耗尽的表现是【卡死或崩掉】，而不是给个提示 —— 那样这一趟就白跑了。
+     *   所以这里主动卡一道，超了就停下并明确告诉用户去调低手机端画质。 */
+    if (h264dec_width(g_h264) > 0) {
+        int sw2 = h264dec_width(g_h264), sh2 = h264dec_height(g_h264);
+        if (sw2 > 1024 || sh2 > 768 || (long)sw2 * sh2 > 900L * 600L) {
+            if (!g_h_toobig) {
+                g_h_toobig = 1;
+                cl_log("⚠⚠ 手机推的画面太大: %dx%d —— 停止解码，避免把车机内存吃光",
+                       sw2, sh2);
+                wsprintfW(t, L"手机推的画面太大（%dx%d），继续解会把车机内存吃光。"
+                             L"请在手机上把投屏画质调低，或按「分辨率」按钮换一档重连。",
+                          sw2, sh2);
+                set_status(t);
+            }
+            return 1;
+        }
+    }
+    if (g_h_toobig)
+        return 1;                      /* 已经在超大状态，不再喂 */
 
     r = h264dec_feed(g_h264, buf, len, g_hbuf, g_hbufcap, &w, &h);
 
@@ -267,6 +291,16 @@ static void show_frame(const unsigned char *buf, int len)
      *   什么 profile、怎么切帧 —— 这些靠猜永远猜不准，
      *   靠这段原始数据一眼就能看出来。这是最有价值的一个文件。 */
     cl_log_dumpfile("video-raw.bin", buf, len);
+
+    /* ⚠ 收帧缓冲是有限的（RX_CAP）。一旦某帧比它大，收到的就是【被截断的一半】——
+     *   JPEG 顶多花一帧，H.264 会直接把解码器带偏（表现为花屏或长时间黑屏）。
+     *   这种事在车机上完全看不出来，所以必须记进日志。 */
+    if (len >= g_rxcap && !g_trunc_warn) {
+        g_trunc_warn = 1;
+        cl_log("⚠⚠ 收到的一帧(%d 字节)顶满了收帧缓冲(%d) —— 很可能被截断了。"
+               "日志里出现这一行，说明该把手机端分辨率调低。",
+               len, g_rxcap);
+    }
 
     if (len >= 2 && buf[0] == 0xFF && buf[1] == 0xD8) {
         /* JPEG */
