@@ -614,6 +614,7 @@ static SOCKET connect_cmd(void)
 }
 
 /* 会话跑在后台线程。主线程必须留在消息循环里，否则窗口根本不刷新。 */
+static void run_session(void);          /* 前向声明：线程函数要用到它 */
 static HANDLE g_hthr = 0;
 
 static DWORD WINAPI session_thread(LPVOID param)
