@@ -131,7 +131,12 @@ static int annexb_safe_len(H264DEC *d)
         }
     }
     if (last < 0) return -1;
-    return last - d->accUse;
+    /* ⚠ 必须把最后一个起始码的 3 个字节【一起喂进去】。
+     * 只喂到起始码之前，最后那条 NAL 就没有任何东西给它收尾，
+     * h264bsd 会把它挂成「未完成」，于是永远不出帧
+     * （实锤：Annex-B 三路全部停在「SPS: 480x272」，一帧都不吐；
+     *  而裸 NAL 那路结尾自带起始码，一直是好的）。 */
+    return last - d->accUse + 3;
 }
 
 static int acc_push(H264DEC *d, const unsigned char *p, int n)
