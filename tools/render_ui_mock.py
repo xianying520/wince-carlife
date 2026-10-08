@@ -73,6 +73,14 @@ def render(state, path, C, G, sw=800, sh=480):
     pad = px(G["UI_PAD"])
     barh = px(G["UI_BAR_H"])
 
+    def content_cols():
+        """内容列：屏幕更宽就居中收窄，和 ui.c 的 content_left 同一套算法。"""
+        cw = px(G["UI_CONTENT_W"])
+        if cw > sw:
+            cw = sw
+        l = (sw - cw) // 2
+        return l, l + cw
+
     def text_at(x, y, s, font, color, anchor="la"):
         d.text((x, y), s, font=font, fill=color, anchor=anchor)
 
@@ -82,7 +90,7 @@ def render(state, path, C, G, sw=800, sh=480):
     # ── 顶栏 ──
     text_at(pad, vcenter(0, barh), "CarLife 车机端", f_bar, C["UI_MUTED"], "lm")
     text_at(sw - pad, vcenter(0, barh), "运行日志：carlife-log.txt", f_bar,
-            C["UI_RULE"], "rm")
+            C["UI_HINT"], "rm")
     d.rectangle([pad, barh, sw - pad - 1, barh], fill=C["UI_RULE"])
 
     # ── 内容块垂直居中 ──
@@ -94,22 +102,29 @@ def render(state, path, C, G, sw=800, sh=480):
     if top < barh + px(8):
         top = barh + px(8)
 
+    clx, crx = content_cols()
     y = top
     if state["head1"]:
-        text_at(pad, vcenter(y, px(G["UI_HEAD_H"])), state["head1"], f_head,
+        text_at(clx, vcenter(y, px(G["UI_HEAD_H"])), state["head1"], f_head,
                 C["UI_TEXT"], "lm")
     y += px(G["UI_HEAD_H"]) + px(G["UI_SUB_GAP"])
     if state["head2"]:
-        text_at(pad, vcenter(y, px(G["UI_SUB_H"])), state["head2"], f_sub,
+        text_at(clx, vcenter(y, px(G["UI_SUB_H"])), state["head2"], f_sub,
                 C["UI_MUTED"], "lm")
 
     # ── 阶段轨道 ──
     y = top + px(G["UI_HEAD_H"]) + px(G["UI_SUB_GAP"]) + px(G["UI_SUB_H"]) + px(G["UI_TRACK_GAP"])
     dotr = px(G["UI_DOT"]) // 2
+    clx, crx = content_cols()
     for i, name in enumerate(state["names"]):
         st = state["st"][i]
         cy = vcenter(y, px(G["UI_STEP_H"]))
-        cx = pad + px(G["UI_DOT"]) // 2 + 1
+        cx = clx + px(G["UI_DOT"]) // 2 + 1
+
+        # 进行中那一行：极淡琥珀底（状态高亮，不是装饰）
+        if st == 1:
+            d.rectangle([clx - px(10), y + 1, crx + px(10), y + px(G["UI_STEP_H"]) - 1],
+                        fill=C["UI_WASH"])
 
         fill = {0: C["UI_DOT_OFF"], 1: C["UI_AMBER"], 2: C["UI_GREEN"], 3: C["UI_RED"]}[st]
         if st == 0:
@@ -129,13 +144,13 @@ def render(state, path, C, G, sw=800, sh=480):
         if det:
             dc = (C["UI_RED"] if st == 3 else
                   C["UI_AMBER"] if st == 1 else C["UI_MUTED"])
-            text_at(sw - pad, cy, det, f_det, dc, "rm")
+            text_at(crx, cy, det, f_det, dc, "rm")
         y += px(G["UI_STEP_H"])
 
     # ── 细节行（失败原因 / 提示）──
     if state["foot"]:
         fy = y + px(G["UI_DETAIL_GAP"])
-        maxw = sw - 2 * pad
+        maxw = crx - clx
         words, line, lines = state["foot"].split(" "), "", []
         for w in words:
             t = (line + " " + w).strip()
@@ -147,7 +162,7 @@ def render(state, path, C, G, sw=800, sh=480):
         if line:
             lines.append(line)
         for k, ln in enumerate(lines[:3]):
-            text_at(pad, fy + k * (px(G["UI_F_DETAIL"]) + px(5)), ln, f_det,
+            text_at(clx, fy + k * (px(G["UI_F_DETAIL"]) + px(5)), ln, f_det,
                     C["UI_MUTED"], "la")
 
     # ── 底栏 ──
