@@ -68,7 +68,16 @@ static WCHAR    g_status[256] = L"正在连接手机 ...";
 static int      g_frames = 0, g_decoded = 0, g_shown = 0;
 static unsigned long g_t0 = 0;
 static int      g_fps = 0;
-static int      g_miss = 0;                /* 连续收到非 JPEG 帧的次数 */
+static int      g_miss = 0;                /* 连续收到非 JPEG/解码失败的次数 */
+
+/* ⚠ 这两个必须放在 #ifdef HAS_H264 【外面】。
+ *   原因：show_frame 与 session_thread 在【不带 H.264】的那份构建里也要编，
+ *   而它们都会用到这两个变量。放进 #ifdef 里的话，不带 H.264 的构建会报
+ *   undeclared —— 实锤：CI 的 2 号工作流（不带）编不过，4 号（带）却没事。
+ *   ⚠ 注意 scripts/check_order.py 【不剥注释】，所以注释里别写
+ *   「函数名紧跟左括号」，否则会被误判成「函数用在定义之前」。 */
+static int      g_h_toobig   = 0;   /* 分辨率超出车机承受能力，已经报过了 */
+static int      g_trunc_warn = 0;   /* 视频帧被收帧缓冲截断，已经报过了 */
 
 /* 把"不是 JPEG"的帧存到 U 盘上，让用户带回来。
  * 为什么必须做：手机推的到底是 JPEG 还是 H.264，决定我们要不要移植一个
@@ -152,8 +161,6 @@ static H264DEC       *g_h264     = 0;
 static unsigned char *g_hbuf     = 0;
 static int            g_hbufcap  = 0;
 static int            g_h_reported = 0;
-static int            g_h_toobig   = 0;   /* 分辨率超出车机承受能力，已经报过了 */
-static int            g_trunc_warn = 0;   /* 视频帧被缓冲截断，已经报过了 */
 
 /* 按 SPS 报出来的尺寸准备输出缓冲；SPS 没到之前先给一个 800x480 的档。 */
 static int h264_ensure_buf(void)
