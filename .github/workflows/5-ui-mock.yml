@@ -39,6 +39,9 @@ jobs:
       - name: 渲染各状态的设计稿
         run: python3 tools/render_ui_mock.py ui-mock
 
+      - name: 渲染各状态的设计稿
+        run: python3 tools/render_ui_mock.py ui-mock
+
       - name: 查 coredll 里到底有哪些「字体/文本」函数可用
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -60,18 +63,11 @@ jobs:
           arm-mingw32ce-nm "$LIB" 2>/dev/null | grep -iE ' T .*(Ellipse|Rectangle|CreatePen|CreateSolidBrush|FillRect|SelectObject)' | sed 's/.* T //' | sort -u
 
       - name: 顺带验证 ui.c 能为 ARM/WinCE 编译
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          gh release download cegcc-arm \
-            --pattern 'cegcc-arm-mingw32ce.tar.gz' \
-            --dir "$RUNNER_TEMP" --clobber
-          mkdir -p "$HOME/tc"
-          tar xzf "$RUNNER_TEMP/cegcc-arm-mingw32ce.tar.gz" -C "$HOME/tc"
           export PATH="$HOME/tc/cegcc/bin:$PATH"
           arm-mingw32ce-gcc -Os -Wall -DUNICODE -D_UNICODE -Isrc -c src/ui.c -o /tmp/ui.o
-          echo "ui.c 已为 ARM/WinCE 编译通过"
-          arm-mingw32ce-nm /tmp/ui.o | grep -c ' T ui_' || true
+          echo "ui.c 编译通过"
+          arm-mingw32ce-nm /tmp/ui.o | grep ' T ui_' | head -12 || true
 
       - name: 上传设计稿
         uses: actions/upload-artifact@v4
