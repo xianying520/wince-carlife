@@ -117,6 +117,23 @@ const char *h264dec_profile_name(int p)
 }
 
 /* ---------- 追加到累积缓冲 ---------- */
+/* Annex-B 下算出「可以安全喂给 h264bsd 的长度」：
+ * 只喂到【最后一个起始码之前】。这样喂进去的每一条 NAL 都是完整的 ——
+ * h264bsd 把一个「被切断的 NAL」当成完整 NAL 去解，会直接报解码错误
+ * （实测：Annex-B 分块喂时「解码错误，已丢弃 1 次」就是这么来的）。
+ * 尾巴留在缓冲里等下次。返回 -1 表示还没有第二个起始码，暂时不能喂。 */
+static int annexb_safe_len(H264DEC *d)
+{
+    int i, last = -1;
+    for (i = d->accUse; i + 3 <= d->accLen; i++) {
+        if (d->acc[i] == 0 && d->acc[i + 1] == 0 && d->acc[i + 2] == 1) {
+            if (i > d->accUse) last = i;
+        }
+    }
+    if (last < 0) return -1;
+    return last - d->accUse;
+}
+
 static int acc_push(H264DEC *d, const unsigned char *p, int n)
 {
     if (n <= 0) return 1;
@@ -278,6 +295,13 @@ int h264dec_feed(H264DEC *d, const unsigned char *data, int len,
 
         if (avail <= 0) break;
 
+        /* Annex-B：绝不把「被切断的 NAL」喂进去 */
+        if (d->fmt == H264DEC_FMT_ANNEXB) {
+            int safe = annexb_safe_len(d);
+            if (safe < 0) break;            /* 还没凑出完整 NAL */
+            if (safe > 0 && safe < avail) avail = safe;
+        }
+
         r = h264bsdDecode(d->st, d->acc + d->accUse, (u32)avail, d->picId, &readBytes);
 
         if (r == H264BSD_PARAM_SET_ERROR || r == H264BSD_ERROR) {
@@ -358,7 +382,17 @@ int h264dec_feed(H264DEC *d, const unsigned char *data, int len,
         if (d->accUse >= d->accLen) { d->accLen = 0; d->accUse = 0; }
     }
 
-    if (d->accUse > 0 && d->accUse >= d->accLen) { d->accLen = 0; d->accUse = 0; }
+    if (d->accUse > 0 && d->accUse >= d->accLen) {
+        d->accLen = 0; d->accUse = 0;
+    } else if (d->accUse > 0) {
+        /* 压实：把没吃掉的尾巴挪到缓冲开头。不这么做缓冲会一直涨到上限。
+         * 安全性依据：只把 h264bsd【已经吃掉】的字节搬走，指针虽然变了，
+         * 但它下次看到的是同一批尚未处理的数据，重新解析是正确的。
+         * 访问单元边界那种「必须用同一指针重入」的情况，在循环里已经就地解决了。 */
+        memmove(d->acc, d->acc + d->accUse, (size_t)(d->accLen - d->accUse));
+        d->accLen -= d->accUse;
+        d->accUse = 0;
+    }
 
     return result;
 }
