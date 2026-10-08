@@ -119,12 +119,14 @@ static int run_one(const char *path, int mode, RESULT *out, const char **why)
             int r = h264dec_feed(d, raw + off[i], len[i], outbuf, OUTCAP, &w, &h);
             if (r == H264DEC_GOT_FRAME) { out->frames++; out->w = w; out->h = h; }
         }
-    } else {                               /* 分块喂 */
-        const unsigned char *src = (mode == 0) ? raw : seq;
-        int srcLen = (mode == 0) ? rawLen : seqLen;
-        for (pos = 0; pos < srcLen; pos += CHUNK) {
+    } else {                               /* 分块喂 / 整块喂 */
+        const unsigned char *src = (mode == 0 || mode == 3) ? raw : seq;
+        int srcLen = (mode == 0 || mode == 3) ? rawLen : seqLen;
+        int step = (mode == 3) ? srcLen : CHUNK;
+        if (step <= 0) step = 1;
+        for (pos = 0; pos < srcLen; pos += step) {
             int chunk = srcLen - pos; int w = 0, h = 0; int r;
-            if (chunk > CHUNK) chunk = CHUNK;
+            if (chunk > step) chunk = step;
             r = h264dec_feed(d, src + pos, chunk, outbuf, OUTCAP, &w, &h);
             if (r == H264DEC_GOT_FRAME) { out->frames++; out->w = w; out->h = h; }
         }
@@ -167,7 +169,7 @@ int main(int argc, char **argv)
         { "blue_480x272.h264",  480, 272, 0, 0, 1 },
         { "red_480x270.h264",   480, 270, 1, 0, 0 },   /* 逼出裁剪路径 */
     };
-    static const char *mn[3] = { "AnnexB分块", "AVCC分块", "裸NAL逐条" };
+    static const char *mn[4] = { "AnnexB分块", "AVCC分块", "裸NAL逐条", "AnnexB整块" };
     char path[512];
     size_t ci;
     int m;
@@ -179,7 +181,7 @@ int main(int argc, char **argv)
         snprintf(path, sizeof(path), "%s/%s", dir, c->file);
         printf("  码流 %s  (期望 %dx%d)\n", c->file, c->w, c->h);
 
-        for (m = 0; m < 3; m++) {
+        for (m = 0; m < 4; m++) {
             RESULT R;
             const char *why = "";
             if (!run_one(path, m, &R, &why)) {
