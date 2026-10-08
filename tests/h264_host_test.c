@@ -199,7 +199,7 @@ int main(int argc, char **argv)
                 g_fail++;
                 continue;
             }
-            printf("     %-10s  OK   出帧=%d  %dx%d  profile=%d(%s)  切帧识别=%s\n",
+            printf("     %-10s  OK   出帧=%d(共3帧,末帧留待下一帧触发)  %dx%d  profile=%d(%s)  切帧=%s\n",
                    mn[m], R.frames, R.w, R.h,
                    R.profile, h264dec_profile_name(R.profile),
                    h264dec_format_name(R.fmt));
