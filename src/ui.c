@@ -20,6 +20,7 @@ static const WCHAR *g_st_name[UI_STEPS] = {
 static HFONT  g_f_head, g_f_sub, g_f_step, g_f_detail, g_f_bar;
 static HBRUSH g_br_bg, g_br_panel;
 static HBRUSH g_br_dot[4];
+static HBRUSH g_br_wash;
 static HPEN   g_pn_dot[4];
 
 static int   g_sw = UI_BASE_W, g_sh = UI_BASE_H;
@@ -96,6 +97,7 @@ void ui_init(HWND hwnd)
 
     g_br_bg    = CreateSolidBrush(UI_BG);
     g_br_panel = CreateSolidBrush(UI_PANEL);
+    g_br_wash  = CreateSolidBrush(UI_WASH);
 
     dotc[UI_ST_PENDING] = UI_DOT_OFF;
     dotc[UI_ST_ACTIVE]  = UI_AMBER;
@@ -119,6 +121,7 @@ void ui_free(void)
     if (g_f_bar)    DeleteObject(g_f_bar);
     if (g_br_bg)    DeleteObject(g_br_bg);
     if (g_br_panel) DeleteObject(g_br_panel);
+    if (g_br_wash)  DeleteObject(g_br_wash);
     for (i = 0; i < 4; i++) {
         if (g_br_dot[i]) DeleteObject(g_br_dot[i]);
         if (g_pn_dot[i]) DeleteObject(g_pn_dot[i]);
@@ -168,6 +171,18 @@ void ui_button_label(int which, const WCHAR *text)
     if (which < 0 || which > 2 || !text) return;
     for (k = 0; k < 20 && text[k]; k++) g_btn[which][k] = text[k];
     g_btn[which][k] = 0;
+}
+
+/* 内容列：屏幕比 UI_CONTENT_W 宽就居中收窄，两边对称留白。
+ * 两列信息只有靠得够近才读得成一行，铺满全宽会散成两块。 */
+static int content_left(const RECT *rc, int *out_right)
+{
+    int cw = px(UI_CONTENT_W);
+    int l;
+    if (cw > rc->right) cw = rc->right;
+    l = (rc->right - cw) / 2;
+    *out_right = l + cw;
+    return l;
 }
 
 /* ── 一条极细分隔线 ── */
@@ -276,7 +291,7 @@ void ui_paint_connect(HDC dc, const RECT *rc)
         const WCHAR *lg = L"运行日志：carlife-log.txt";
         int n = 0; while (lg[n]) n++;
         r.left = rc->right - pad - px(7) * n / 2;
-        text(dc, g_f_bar, lg, &r, UI_RULE,
+        text(dc, g_f_bar, lg, &r, UI_HINT,
              DT_RIGHT | DT_VCENTER | DT_SINGLELINE);
     }
     hr(dc, pad, rc->top + px(UI_BAR_H), rc->right - pad, UI_RULE);
@@ -292,14 +307,17 @@ void ui_paint_connect(HDC dc, const RECT *rc)
     /* 主标题 / 副标题 */
     y = top;
     if (g_head1[0]) {
-        r = *rc; r.left = pad; r.right = rc->right - pad;
+        int cr;
+        int cl2 = content_left(rc, &cr);
+        r = *rc; r.left = cl2; r.right = cr;
         r.top = y; r.bottom = y + px(UI_HEAD_H);
         text(dc, g_f_head, g_head1, &r, UI_TEXT,
              DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS);
     }
     y += px(UI_HEAD_H) + px(UI_SUB_GAP);
     if (g_head2[0]) {
-        r = *rc; r.left = pad; r.right = rc->right - pad;
+        int cr, cl2 = content_left(rc, &cr);
+        r = *rc; r.left = cl2; r.right = cr;
         r.top = y; r.bottom = y + px(UI_SUB_H);
         text(dc, g_f_sub, g_head2, &r, UI_MUTED,
              DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS);
@@ -309,10 +327,21 @@ void ui_paint_connect(HDC dc, const RECT *rc)
      * 它就是连接过程本身的状态机，一眼看出卡在第几步。 */
     y = top + px(UI_HEAD_H) + px(UI_SUB_GAP) + px(UI_SUB_H) + px(UI_TRACK_GAP);
     for (i = 0; i < UI_STEPS; i++) {
+        int cr, cl2 = content_left(rc, &cr);
         int cy = y + px(UI_STEP_H) / 2;
-        int cx = pad + px(UI_DOT) / 2 + 1;
+        int cx = cl2 + px(UI_DOT) / 2 + 1;
         COLORREF tc = UI_MUTED;
         RECT tr;
+
+        /* 进行中那一行铺一层极淡的琥珀底。
+         * 8 行长得一模一样，光靠圆点颜色在车里一眼分不出来 ——
+         * 这不是装饰，是状态高亮。 */
+        if (g_st[i] == UI_ST_ACTIVE) {
+            RECT wr;
+            wr.left = cl2 - px(10); wr.right = cr + px(10);
+            wr.top = y + 1; wr.bottom = y + px(UI_STEP_H) - 1;
+            FillRect(dc, &wr, g_br_wash);
+        }
 
         dot(dc, cx, cy, px(UI_DOT) / 2, g_st[i]);
 
@@ -322,7 +351,7 @@ void ui_paint_connect(HDC dc, const RECT *rc)
 
         tr = *rc;
         tr.left = cx + px(UI_DOT) / 2 + px(14);
-        tr.right = rc->right - pad - px(190);
+        tr.right = cr - px(UI_DETAIL_W);
         tr.top = y; tr.bottom = y + px(UI_STEP_H);
         text(dc, g_f_step, g_st_name[i], &tr, tc,
              DT_LEFT | DT_VCENTER | DT_SINGLELINE);
@@ -331,8 +360,8 @@ void ui_paint_connect(HDC dc, const RECT *rc)
          * 还没轮到的行留白 —— 空着比写「等待中」干净。 */
         if (g_st_detail[i][0]) {
             RECT dr = *rc;
-            dr.left = rc->right - pad - px(190);
-            dr.right = rc->right - pad;
+            dr.left = cr - px(UI_DETAIL_W);
+            dr.right = cr;
             dr.top = y; dr.bottom = y + px(UI_STEP_H);
             text(dc, g_f_detail, g_st_detail[i], &dr,
                  (g_st[i] == UI_ST_FAIL) ? UI_RED :
@@ -344,8 +373,9 @@ void ui_paint_connect(HDC dc, const RECT *rc)
 
     /* 细节行：失败原因 / 当前提示 */
     if (g_foot[0]) {
+        int cr, cl2 = content_left(rc, &cr);
         RECT fr = *rc;
-        fr.left = pad; fr.right = rc->right - pad;
+        fr.left = cl2; fr.right = cr;
         fr.top = y + px(UI_DETAIL_GAP);
         fr.bottom = fr.top + px(UI_DETAIL_H);
         text(dc, g_f_detail, g_foot, &fr, UI_MUTED,
