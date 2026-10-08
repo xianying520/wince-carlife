@@ -132,12 +132,68 @@ static void conn_push_to_phone(int i, const unsigned char *d, int n)
  * 7240 端口就没人监听，adbd 会直接拒绝我们的 OPEN。EasyConnected 是靠
  * 往手机推一个 carman 程序并执行来解决的；我们用 ADB 的 shell 服务更省事：
  * 先列包名找到 CarLife，再用 monkey 启动它。 */
+/* 让 Android 自己告诉我们这个包的【启动 Activity】叫什么。
+ *
+ * 这比写死包名和 Activity 名靠谱得多：vivo / OPPO / 小米 的组件名各不相同，
+ * 而且 com.baidu.carlife 在多数手机上是【无界面组件】，没有 LAUNCHER 图标，
+ * 所以 `monkey -c android.intent.category.LAUNCHER` 会直接失败
+ * （原来就只用这一条命令，等于赌手机端有启动图标）。
+ *
+ * cmd package resolve-activity 是 Android 7+ 自带的，各家 ROM 都有。 */
+static int resolve_activity(const char *pkg, char *out, int cap)
+{
+    char cmd[320];
+    char buf[1024];
+    char *p, *q;
+
+    if (!pkg || !out || cap <= 0) return -1;
+    out[0] = 0;
+
+    snprintf(cmd, sizeof(cmd) - 1, "cmd package resolve-activity --brief %s", pkg);
+    buf[0] = 0;
+    if (adb_run_shell(&g_adb, cmd, buf, (int)sizeof(buf) - 1, 6000) != 0)
+        return -1;
+
+    /* 输出形如：com.baidu.carlife/com.baidu.carlife.CarlifeActivity */
+    p = strchr(buf, '/');
+    if (!p) return -1;
+    p++;
+    q = p;
+    while (*q && *q != '\r' && *q != '\n' && *q != ' ' && *q != '\t') q++;
+    if (q == p || (int)(q - p) >= cap) return -1;
+    memcpy(out, p, (size_t)(q - p));
+    out[q - p] = 0;
+    return 0;
+}
+
+/* 确认这个包【真的在跑】。
+ * 这一步把「已尝试启动」变成「确认真起来了」——
+ * 车机没法实测，所以任何"我发过命令了"都不算数，必须有事实。 */
+static int pkg_running(const char *pkg)
+{
+    char cmd[320];
+    char buf[512];
+    const char *p;
+
+    if (!pkg) return -1;
+    snprintf(cmd, sizeof(cmd) - 1, "pidof %s", pkg);
+    buf[0] = 0;
+    if (adb_run_shell(&g_adb, cmd, buf, (int)sizeof(buf) - 1, 3000) != 0)
+        return -1;                       /* 问不出来 —— 不算"没在跑" */
+    p = buf;
+    while (*p == ' ' || *p == '\r' || *p == '\n' || *p == '\t') p++;
+    /* pidof 有数字输出 = 进程在 */
+    return (*p >= '0' && *p <= '9') ? 1 : 0;
+}
+
 int adbp_launch_phone_app(char *detail, int cap)
 {
     char  buf[8192];
     char  pkg[208];
-    char  cmd[400];
+    char  act[256];
+    char  cmd[600];
     int   r;
+    int   running;
 
     if (detail && cap > 0) detail[0] = 0;
 
@@ -148,37 +204,51 @@ int adbp_launch_phone_app(char *detail, int cap)
         return -1;
     }
 
-    /* 把清单留一份，现场可以直接看手机里 CarLife 叫什么 */
+    /* 把清单留一份，现场可以直接看手机里智能车载到底叫什么 */
     snprintf(g_pkgs, sizeof(g_pkgs) - 1, "%s", buf);
     g_pkgs[sizeof(g_pkgs) - 1] = 0;
 
     if (adb_find_carlife_pkg(buf, pkg, (int)sizeof(pkg)) != 0) {
         snprintf(g_note, sizeof(g_note) - 1,
-                 "壳找包名失败: adb_run_shell=%d 收到 %d 字节 首个字节 0x%02X",
-                 r, (int)strlen(buf),
-                 (int)(unsigned char)buf[0]);
+                 "手机里没找到智能车载的包（认得 %d 字节包名清单，首字节 0x%02X）",
+                 (int)strlen(buf), (int)(unsigned char)buf[0]);
         if (detail) snprintf(detail, (size_t)cap, "%s", g_note);
         return -1;
     }
 
-    snprintf(cmd, sizeof(cmd),
-             "monkey -p %s -c android.intent.category.LAUNCHER 1", pkg);
-    buf[0] = 0;
-    /* 这条命令的成败必须检查。以前没检查，于是命令压根没发出去也照样报
-     * "已尝试启动"，把真正的问题盖住了。 */
-    r = adb_run_shell(&g_adb, cmd, buf, (int)sizeof(buf), 6000);
-    if (r != 0) {
+    /* ── ① 先问 Android 要启动 Activity，再 am start 指过去 ──
+     * 这条路对"无界面组件"也有效，是最通用的一条。 */
+    act[0] = 0;
+    if (resolve_activity(pkg, act, (int)sizeof(act)) == 0) {
+        snprintf(cmd, sizeof(cmd) - 1, "am start -n %s/%s", pkg, act);
+        buf[0] = 0;
+        adb_run_shell(&g_adb, cmd, buf, (int)sizeof(buf) - 1, 8000);
+    }
+
+    /* ── ② 确认在不在跑；不在就用 monkey 兜一次 ── */
+    running = pkg_running(pkg);
+    if (running != 1) {
+        snprintf(cmd, sizeof(cmd) - 1,
+                 "monkey -p %s -c android.intent.category.LAUNCHER 1", pkg);
+        buf[0] = 0;
+        adb_run_shell(&g_adb, cmd, buf, (int)sizeof(buf) - 1, 8000);
+    }
+
+    /* ── ③ 再确认一次，把【事实】写进结果，而不是"已尝试" ── */
+    running = pkg_running(pkg);
+    if (running == 1)
+        snprintf(g_note, sizeof(g_note) - 1, "已确认 %s 在手机端运行", pkg);
+    else if (running == 0)
         snprintf(g_note, sizeof(g_note) - 1,
-                 "启动命令没发出去 %s（adb_run_shell 返回 %d）", pkg, r);
-        if (detail) snprintf(detail, (size_t)cap, "%s", g_note);
-        return -1;
-    }
+                 "命令已发给 %s，但进程没起来（手机可能弹了权限框，请看一眼手机）", pkg);
+    else
+        snprintf(g_note, sizeof(g_note) - 1,
+                 "%s 启动了，但手机不允许查询进程，无法确认", pkg);
 
-    snprintf(g_note, sizeof(g_note) - 1, "已尝试启动手机端 %s", pkg);
-    if (detail)
-        snprintf(detail, (size_t)cap, "%s", g_note);
-    return 0;
+    if (detail) snprintf(detail, (size_t)cap, "%s", g_note);
+    return (running == 1) ? 0 : -1;
 }
+
 
 const char *adbp_phone_packages(void)
 {
