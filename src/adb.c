@@ -550,12 +550,19 @@ int adb_find_carlife_pkg(const char *pm_output, char *out, int cap)
     /* 按优先级找：先找 CarLife 本身，再找 vivo 的 Jovi InCar。
      * pm 的输出形如 "package:com.baidu.carlife"。 */
     static const char *keys[] = {
+        /* ① 百度 CarLife 本体 —— 优先找它。
+         * vivo Jovi InCar / OPPO 车联 / 小米 CarWith 这三家虽然各有自己的壳，
+         * 但它们都靠【百度 CarLife 组件】跟车机对话，那个组件的包名就是它。
+         * 百度自己的车机程序也只认这一个（am start -n com.baidu.carlife/...）。*/
         "com.baidu.carlife",
         "carlife",
-        "joviincar",
-        "jovi.incar",
-        "incar",
-        "carbit"
+        /* ② 各家自己的壳。顺序放在百度之后：有组件就用组件，没有才用壳。 */
+        "joviincar", "jovi.incar",            /* vivo   */
+        "carlink",                            /* OPPO 车联 / 小米 CarWith 常用词 */
+        "carwith",                            /* 小米   */
+        "oppo.car", "coloros.car",            /* OPPO   */
+        "miui.car",                           /* 小米   */
+        "incar", "carbit", "hicar"            /* 兜底，含华为 */
     };
     const char *p;
     int k;
