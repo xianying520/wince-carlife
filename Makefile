@@ -106,6 +106,10 @@ $(BUILD)/display.o: src/display.c src/display.h | $(BUILD)
 $(BUILD)/cllog.o: src/cllog.c src/cllog.h | $(BUILD)
 	$(CC) $(CFLAGS) -c $< -o $@
 
+# 界面（ui）：配色与几何在 ui_layout.h 里，电脑上的设计稿脚本读同一份
+$(BUILD)/ui.o: src/ui.c src/ui.h src/ui_layout.h | $(BUILD)
+	$(CC) $(CFLAGS) -c $< -o $@
+
 # nanojpeg 是第三方源码（MIT），不套用项目自身的 -DUNICODE 等旗标，
 # 并且关掉它自身的警告噪音 —— 我们不改第三方代码。
 $(BUILD)/nanojpeg.o: src/third_party/nanojpeg.c | $(BUILD)
@@ -138,7 +142,8 @@ $(BUILD)/h264bsd_%.o: $(H264BSD)/%.c | $(BUILD)
 
 VIEWER_OBJS := $(BUILD)/viewer.o $(BUILD)/carlife.o $(BUILD)/display.o \
                $(BUILD)/nanojpeg.o $(BUILD)/adbproxy.o $(BUILD)/adb.o \
-               $(BUILD)/adbio_ce.o $(BUILD)/rsa.o $(BUILD)/cllog.o $(H264_OBJS)
+               $(BUILD)/adbio_ce.o $(BUILD)/rsa.o $(BUILD)/cllog.o \
+               $(BUILD)/ui.o $(H264_OBJS)
 
 $(VIEWER_EXE): $(VIEWER_OBJS)
 	$(CC) $(LDFLAGS) -o $@ $^ $(CORELIB) $(NETLIB)
