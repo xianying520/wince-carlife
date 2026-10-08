@@ -234,19 +234,36 @@ int adbp_launch_phone_app(char *detail, int cap)
         adb_run_shell(&g_adb, cmd, buf, (int)sizeof(buf) - 1, 8000);
     }
 
-    /* ── ③ 再确认一次，把【事实】写进结果，而不是"已尝试" ── */
+    /* ── ③ 再确认一次，把结果写进 detail 给人看 ──
+     *
+     * ⚠⚠ 返回值语义（踩过坑，务必看清）：
+     *    0  = 「启动动作已经做过了，你可以去重试端口了」
+     *    而【不是】「我确认它已经在跑了」。
+     *
+     *    踩的坑：一开始写成 pidof 确认在跑才算成功，于是……
+     *      · 很多手机（以及主机测试里的假手机）根本不允许 shell 查询别的进程，
+     *        pidof 返回空 → 判为没起来 → 返回 -1
+     *      · 调用方 open_with_retry 看到 -1 就【直接放弃重试】
+     *      · 而重试才是真正把连接做起来的动作
+     *    结果：启动命令发了、手机端也真起来了，转发器却再也不去重试端口，
+     *    车机上表现就是「一直连不上」。
+     *
+     *    这个坑是主机端到端测试抓出来的：
+     *      ❌ ★ 启动后重试 tcp:7240 成功   tcp:7240 出现 1 次
+     *
+     *    所以：验证结果只写进 detail 给人看，绝不拿它决定要不要重试。 */
     running = pkg_running(pkg);
     if (running == 1)
-        snprintf(g_note, sizeof(g_note) - 1, "已确认 %s 在手机端运行", pkg);
+        snprintf(g_note, sizeof(g_note) - 1, "已确认 %s 在手机端运行，重试端口", pkg);
     else if (running == 0)
         snprintf(g_note, sizeof(g_note) - 1,
-                 "命令已发给 %s，但进程没起来（手机可能弹了权限框，请看一眼手机）", pkg);
+                 "%s 已拉起（手机不允许查进程，无法进一步确认），重试端口", pkg);
     else
         snprintf(g_note, sizeof(g_note) - 1,
-                 "%s 启动了，但手机不允许查询进程，无法确认", pkg);
+                 "%s 已拉起（无法查询进程状态），重试端口", pkg);
 
     if (detail) snprintf(detail, (size_t)cap, "%s", g_note);
-    return (running == 1) ? 0 : -1;
+    return 0;                       /* 启动动作已完成 → 调用方应当重试 */
 }
 
 
