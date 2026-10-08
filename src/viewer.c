@@ -15,6 +15,9 @@
 #include "display.h"
 #include "adbproxy.h"
 #include "third_party/nanojpeg.h"
+#ifdef HAS_H264
+#include "h264dec.h"
+#endif
 
 #define STATUS_H   22          /* 底部状态栏高度 */
 #define EXIT_W     58          /* 状态栏右侧「退出」按钮宽度 */
@@ -121,6 +124,91 @@ static void dump_unknown_frame(const unsigned char *buf, int len)
     g_dumped += bw;
 }
 
+#ifdef HAS_H264
+/* ── H.264 解码 ──────────────────────────────────────────────────────────────
+ * 车机没法实测，所以这一段每一步都必须能把「发生了什么」显示到窗口上，
+ * 而不是悄悄失败。这也是 h264dec 里那套取证记录存在的理由。 */
+static H264DEC       *g_h264     = 0;
+static unsigned char *g_hbuf     = 0;
+static int            g_hbufcap  = 0;
+static int            g_h_reported = 0;
+
+/* 按 SPS 报出来的尺寸准备输出缓冲；SPS 没到之前先给一个 800x480 的档。 */
+static int h264_ensure_buf(void)
+{
+    int w = h264dec_width(g_h264);
+    int h = h264dec_height(g_h264);
+    int need = (w > 0 && h > 0) ? w * h * 4 : (800 * 480 * 4);
+
+    if (need <= 0 || need > 8 * 1024 * 1024)
+        return -1;                       /* 尺寸离谱，先不分配 */
+    if (g_hbuf && g_hbufcap >= need)
+        return 0;
+    if (g_hbuf) { free(g_hbuf); g_hbuf = 0; g_hbufcap = 0; }
+    g_hbuf = (unsigned char *)malloc((size_t)need);
+    if (!g_hbuf)
+        return -1;
+    g_hbufcap = need;
+    return 0;
+}
+
+static int show_h264(const unsigned char *buf, int len)
+{
+    int w = 0, h = 0, r;
+    WCHAR t[200];
+
+    if (!g_h264) {
+        g_h264 = h264dec_open();
+        if (!g_h264) {
+            set_status(L"H.264 解码器初始化失败（内存不够）");
+            return 1;
+        }
+    }
+    if (h264_ensure_buf() != 0) {
+        set_status(L"H.264 输出缓冲分配失败（内存不够）");
+        return 1;
+    }
+
+    r = h264dec_feed(g_h264, buf, len, g_hbuf, g_hbufcap, &w, &h);
+
+    if (r < 0) {
+        g_miss++;
+        if (g_miss == 3)
+            set_status(L"H.264 解码出错（码流可能不是 Baseline profile）");
+        return 1;
+    }
+
+    if (r == H264DEC_GOT_FRAME) {
+        if (disp_init(&g_disp, w, h) != 0)
+            return 1;
+        disp_set_bgra(&g_disp, g_hbuf, w, h);
+        g_decoded++;
+        g_shown++;
+        g_miss = 0;
+        if (!g_h_reported) {
+            g_h_reported = 1;
+            wsprintfW(t, L"H.264 %dx%d  第 %d 帧  profile=%d",
+                      w, h, g_frames, h264dec_profile(g_h264));
+            set_status(t);
+        }
+        if (g_hwnd)
+            InvalidateRect(g_hwnd, 0, FALSE);
+        return 1;
+    }
+
+    /* 还没出帧。SPS 一到就把尺寸和 profile 报出来 ——
+     * 万一是 Main/High profile，h264bsd 解不了，这句话就是唯一线索。 */
+    if (!g_h_reported && h264dec_width(g_h264) > 0) {
+        g_h_reported = 1;
+        wsprintfW(t, L"H.264 已识别 SPS：%dx%d  profile=%d（h264bsd 只吃 Baseline=66）",
+                  h264dec_width(g_h264), h264dec_height(g_h264),
+                  h264dec_profile(g_h264));
+        set_status(t);
+    }
+    return 1;
+}
+#endif
+
 static void show_frame(const unsigned char *buf, int len)
 {
     int r;
@@ -149,7 +237,12 @@ static void show_frame(const unsigned char *buf, int len)
         if (g_hwnd)
             InvalidateRect(g_hwnd, 0, FALSE);
     } else {
-        /* 不是 JPEG —— 极可能是 H.264。不装作在显示，直接说明。 */
+#ifdef HAS_H264
+        /* 不是 JPEG —— 按 H.264 解。手机端多数走 H.264，这条是主路径。 */
+        if (show_h264(buf, len))
+            return;
+#endif
+        /* 真不认识。不装作在显示，直接说明并把原始数据存下来。 */
         dump_unknown_frame(buf, len);
         g_miss++;
         if (g_miss == 3) {
