@@ -70,6 +70,21 @@ void disp_set_rgb24(DISP *d, const unsigned char *rgb, int w, int h)
     /* 源缓冲来自 nanojpeg，用完即可释放，这里不动它 */
 }
 
+/* BGRA 直接搬运。
+ * h264bsd 输出的 u32 是 0xAARRGGBB，小端存下来就是 B,G,R,A —— 和 Windows DIB
+ * 32bpp 的字节序一致，所以不需要任何逐像素转换，整行 memcpy 即可。
+ * 这一点在 CI 上用红/绿/蓝三张纯色图逐像素断言过（专门抓通道顺序反掉的错）。 */
+void disp_set_bgra(DISP *d, const unsigned char *bgra, int w, int h)
+{
+    int y;
+
+    if (!d->fb || w != d->sw || h != d->sh)
+        return;
+    for (y = 0; y < h; y++)
+        memcpy(d->fb + (size_t)y * w * 4, bgra + (size_t)y * w * 4,
+               (size_t)w * 4);
+}
+
 void disp_set_gray8(DISP *d, const unsigned char *gray, int w, int h)
 {
     int i, n;
