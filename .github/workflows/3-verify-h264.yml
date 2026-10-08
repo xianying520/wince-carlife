@@ -61,7 +61,7 @@ jobs:
               -o "$RUNNER_TEMP/h264test" -lm
 
       - name: 验证解码（三种切帧形态 × 四个码流）
-        run: "$RUNNER_TEMP/h264test" samples
+        run: '"$RUNNER_TEMP/h264test" samples'
 
   # ── 交叉编译，证明能为 ARM/WinCE 编 ───────────────────────────────────────
   arm-compile:
