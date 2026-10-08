@@ -29,6 +29,12 @@ struct H264DEC {
     u32            picId;
     int            profileWarned;
     int            hdrReady;
+
+    /* 取证：h264bsdDecode 每次返回的 (返回码, 吃掉字节数)。
+     * 车机没法试，所以必须让它自己把「到底发生了什么」讲清楚。 */
+    unsigned char  trR[80];
+    unsigned char  trB[80];
+    int            trLen;
     char           log[128];
 };
 
@@ -98,6 +104,19 @@ const char *h264dec_format_name(int f)
     case H264DEC_FMT_AVCC:   return "AVCC(长度前缀)";
     case H264DEC_FMT_RAW:    return "裸NAL";
     default:                 return "未识别";
+    }
+}
+
+const char *h264dec_code_name(int c)
+{
+    switch (c) {
+    case 0: return "RDY";
+    case 1: return "PIC_RDY";
+    case 2: return "HDRS_RDY";
+    case 3: return "ERROR";
+    case 4: return "PARAM_SET_ERROR";
+    case 5: return "MEMALLOC_ERROR";
+    default: return "?";
     }
 }
 
@@ -246,6 +265,14 @@ int  h264dec_format (H264DEC *d) { return d ? d->fmt : 0; }
 int  h264dec_frames (H264DEC *d) { return d ? d->frames : 0; }
 const char *h264dec_log(H264DEC *d) { return d ? d->log : ""; }
 
+int h264dec_trace(H264DEC *d, const unsigned char **codes, const unsigned char **bytes)
+{
+    if (!d) return 0;
+    if (codes) *codes = d->trR;
+    if (bytes) *bytes = d->trB;
+    return d->trLen;
+}
+
 /* ---------- 主循环 ---------- */
 
 int h264dec_feed(H264DEC *d, const unsigned char *data, int len,
@@ -308,6 +335,12 @@ int h264dec_feed(H264DEC *d, const unsigned char *data, int len,
         }
 
         r = h264bsdDecode(d->st, d->acc + d->accUse, (u32)avail, d->picId, &readBytes);
+
+        if (d->trLen < 80) {                      /* 取证 */
+            d->trR[d->trLen] = (unsigned char)(r & 0xFF);
+            d->trB[d->trLen] = (unsigned char)(readBytes > 255 ? 255 : readBytes);
+            d->trLen++;
+        }
 
         if (r == H264BSD_PARAM_SET_ERROR || r == H264BSD_ERROR) {
             d->errors++;
