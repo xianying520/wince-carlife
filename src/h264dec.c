@@ -290,7 +290,7 @@ int h264dec_feed(H264DEC *d, const unsigned char *data, int len,
             }
             if (d->profile != 66 && d->profile != 0 && !d->profileWarned) {
                 d->profileWarned = 1;
-                setlog(d, "profile 不支持: ", d->profile, h264bsd_profile_name(d->profile));
+                setlog(d, "profile 不支持: ", d->profile, h264dec_profile_name(d->profile));
             }
         }
 
