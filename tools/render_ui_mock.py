@@ -47,6 +47,17 @@ def parse_layout():
     return col, num
 
 
+def content_cols(G, sw):
+    """内容列：屏幕比 UI_CONTENT_W 宽就居中收窄。
+    和 ui.c 里的 content_left() 是同一套算法 —— 两边必须一致，
+    否则设计稿和实机又是两回事。"""
+    cw = G["UI_CONTENT_W"] * sw // G["UI_BASE_W"]
+    if cw > sw:
+        cw = sw
+    l = (sw - cw) // 2
+    return l, l + cw
+
+
 def pick_font(size, bold=False):
     for p in FONT_CANDIDATES:
         if os.path.exists(p):
@@ -73,14 +84,6 @@ def render(state, path, C, G, sw=800, sh=480):
     pad = px(G["UI_PAD"])
     barh = px(G["UI_BAR_H"])
 
-    def content_cols():
-        """内容列：屏幕更宽就居中收窄，和 ui.c 的 content_left 同一套算法。"""
-        cw = px(G["UI_CONTENT_W"])
-        if cw > sw:
-            cw = sw
-        l = (sw - cw) // 2
-        return l, l + cw
-
     def text_at(x, y, s, font, color, anchor="la"):
         d.text((x, y), s, font=font, fill=color, anchor=anchor)
 
@@ -88,7 +91,7 @@ def render(state, path, C, G, sw=800, sh=480):
         return y + h // 2
 
     # ── 顶栏 ──
-    tcl, tcr = content_cols()
+    tcl, tcr = content_cols(G, sw)
     text_at(tcl, vcenter(0, barh), "CarLife 车机端", f_bar, C["UI_MUTED"], "lm")
     text_at(tcr, vcenter(0, barh), "运行日志：carlife-log.txt", f_bar,
             C["UI_HINT"], "rm")
@@ -103,7 +106,7 @@ def render(state, path, C, G, sw=800, sh=480):
     if top < barh + px(8):
         top = barh + px(8)
 
-    clx, crx = content_cols()
+    clx, crx = content_cols(G, sw)
     y = top
     if state["head1"]:
         text_at(clx, vcenter(y, px(G["UI_HEAD_H"])), state["head1"], f_head,
@@ -116,7 +119,7 @@ def render(state, path, C, G, sw=800, sh=480):
     # ── 阶段轨道 ──
     y = top + px(G["UI_HEAD_H"]) + px(G["UI_SUB_GAP"]) + px(G["UI_SUB_H"]) + px(G["UI_TRACK_GAP"])
     dotr = px(G["UI_DOT"]) // 2
-    clx, crx = content_cols()
+    clx, crx = content_cols(G, sw)
     for i, name in enumerate(state["names"]):
         st = state["st"][i]
         cy = vcenter(y, px(G["UI_STEP_H"]))
@@ -197,7 +200,7 @@ def render_mirror(path, C, G, sw=800, sh=480):
            fill=(120, 140, 170))
 
     barh = px(G["UI_BAR_H"])
-    mcl, mcr = content_cols()
+    mcl, mcr = content_cols(G, sw)
     d.rectangle([0, sh - barh, sw, sh], fill=C["UI_PANEL"])
     d.rectangle([mcl, sh - barh, mcr - 1, sh - barh], fill=C["UI_RULE"])
     f_bar = pick_font(px(G["UI_F_BAR"]))
