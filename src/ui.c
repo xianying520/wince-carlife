@@ -33,6 +33,35 @@ static int   g_btn_pressed = -1;
 /* 按屏宽等比缩放（车机就是 800x480，这里只是留个余量）*/
 static int px(int v) { return v * g_sw / UI_BASE_W; }
 
+/* 建字体。
+ * ⚠ coredll 上没有 CreateFontW，只有 CreateFontIndirectW —— 链接期实锤过。 */
+static HFONT mkfont(int h, int weight)
+{
+    LOGFONTW lf;
+    memset(&lf, 0, sizeof(lf));
+    lf.lfHeight         = -h;          /* 负值 = 字符高度，正是要的像素高 */
+    lf.lfWeight         = weight;
+    lf.lfCharSet        = DEFAULT_CHARSET;
+    lf.lfOutPrecision   = OUT_DEFAULT_PRECIS;
+    lf.lfClipPrecision  = CLIP_DEFAULT_PRECIS;
+    lf.lfQuality        = DEFAULT_QUALITY;
+    lf.lfPitchAndFamily = DEFAULT_PITCH | FF_DONTCARE;
+    /* lfFaceName 留空 = 系统默认字面，各种 WinCE ROM 上最稳 */
+    return CreateFontIndirectW(&lf);
+}
+
+/* 估一段文字的宽度。
+ * ⚠ 不调 GetTextExtent*：coredll 上有的只是参数更多的 GetTextExtentExPointW，
+ *   而这里只需要一个「够用」的宽度来排按钮。中日韩按 1 个字高、ASCII 按半个。 */
+static int text_width_est(const WCHAR *s, int fpx)
+{
+    int w = 0, i;
+    if (!s) return 0;
+    for (i = 0; s[i]; i++)
+        w += (s[i] < 128) ? (fpx / 2) : fpx;
+    return w;
+}
+
 static void reset_labels(void)
 {
     int i;
@@ -46,9 +75,12 @@ static void reset_labels(void)
     {
         static const WCHAR *b0 = L"触摸 A", *b1 = L"480x272", *b2 = L"退出";
         int k;
-        for (k = 0; k < 20 && b0[k]; k++) g_btn[0][k] = b0[k]; g_btn[0][k] = 0;
-        for (k = 0; k < 20 && b1[k]; k++) g_btn[1][k] = b1[k]; g_btn[1][k] = 0;
-        for (k = 0; k < 20 && b2[k]; k++) g_btn[2][k] = b2[k]; g_btn[2][k] = 0;
+        for (k = 0; k < 20 && b0[k]; k++) g_btn[0][k] = b0[k];
+        g_btn[0][k] = 0;
+        for (k = 0; k < 20 && b1[k]; k++) g_btn[1][k] = b1[k];
+        g_btn[1][k] = 0;
+        for (k = 0; k < 20 && b2[k]; k++) g_btn[2][k] = b2[k];
+        g_btn[2][k] = 0;
     }
 }
 
@@ -78,21 +110,11 @@ void ui_init(HWND hwnd)
      * 不再靠 DC 的默认字体 —— 原来就是这样，所以字又小又平。
      * 字面用 NULL（走系统默认字面），这是各种 WinCE ROM 上最稳的做法。*/
     dc = GetDC(0);
-    g_f_head   = CreateFontW(-px(UI_F_HEAD),   0, 0, 0, 700, 0, 0, 0, DEFAULT_CHARSET,
-                             OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS, DEFAULT_QUALITY,
-                             0, NULL);
-    g_f_sub    = CreateFontW(-px(UI_F_SUB),    0, 0, 0, 400, 0, 0, 0, DEFAULT_CHARSET,
-                             OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS, DEFAULT_QUALITY,
-                             0, NULL);
-    g_f_step   = CreateFontW(-px(UI_F_STEP),   0, 0, 0, 400, 0, 0, 0, DEFAULT_CHARSET,
-                             OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS, DEFAULT_QUALITY,
-                             0, NULL);
-    g_f_detail = CreateFontW(-px(UI_F_DETAIL), 0, 0, 0, 400, 0, 0, 0, DEFAULT_CHARSET,
-                             OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS, DEFAULT_QUALITY,
-                             0, NULL);
-    g_f_bar    = CreateFontW(-px(UI_F_BAR),    0, 0, 0, 400, 0, 0, 0, DEFAULT_CHARSET,
-                             OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS, DEFAULT_QUALITY,
-                             0, NULL);
+    g_f_head   = mkfont(px(UI_F_HEAD),   700);
+    g_f_sub    = mkfont(px(UI_F_SUB),    400);
+    g_f_step   = mkfont(px(UI_F_STEP),   400);
+    g_f_detail = mkfont(px(UI_F_DETAIL), 400);
+    g_f_bar    = mkfont(px(UI_F_BAR),    400);
     ReleaseDC(0, dc);
 
     g_br_bg    = CreateSolidBrush(UI_BG);
@@ -220,23 +242,15 @@ static void text(HDC dc, HFONT f, const WCHAR *s, RECT *r,
 static void button_rect(int which, const RECT *rc, RECT *out)
 {
     int order[3];
-    HDC dc;
     int w[3], i, x;
 
     /* 从右往左：退出、分辨率、触摸 */
     order[0] = UI_BTN_EXIT; order[1] = UI_BTN_RES; order[2] = UI_BTN_TOUCH;
 
-    dc = GetDC(0);
     for (i = 0; i < 3; i++) {
-        RECT t; SIZE sz;
-        HGDIOBJ of = SelectObject(dc, g_f_bar);
-        t.left = 0; t.right = 0; t.top = 0; t.bottom = 0;
-        GetTextExtentPointW(dc, g_btn[order[i]], -1, &sz);
-        SelectObject(dc, of);
-        w[i] = (int)sz.cx + 2 * px(UI_BTN_PAD);
+        w[i] = text_width_est(g_btn[order[i]], px(UI_F_BAR)) + 2 * px(UI_BTN_PAD);
         if (w[i] < px(46)) w[i] = px(46);
     }
-    ReleaseDC(0, dc);
 
     {
         int cr;
@@ -281,7 +295,6 @@ void ui_paint_connect(HDC dc, const RECT *rc)
 {
     RECT r;
     int i, y, tracks, block, top;
-    int cl2 = 0;
 
     /* 底 */
     FillRect(dc, rc, g_br_bg);
@@ -315,10 +328,6 @@ void ui_paint_connect(HDC dc, const RECT *rc)
 
     /* 主标题 / 副标题 */
     y = top;
-    {
-        int cr;
-        cl2 = content_left(rc, &cr);
-    }
     if (g_head1[0]) {
         int cr, cl2b = content_left(rc, &cr);
         r = *rc; r.left = cl2b; r.right = cr;
