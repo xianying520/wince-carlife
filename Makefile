@@ -102,6 +102,10 @@ $(BUILD)/viewer.o: src/viewer.c src/carlife.h src/display.h src/adbproxy.h src/t
 $(BUILD)/display.o: src/display.c src/display.h | $(BUILD)
 	$(CC) $(CFLAGS) -c $< -o $@
 
+# 分阶段日志（cllog）：现场那一次运行的唯一凭证，必须进 viewer
+$(BUILD)/cllog.o: src/cllog.c src/cllog.h | $(BUILD)
+	$(CC) $(CFLAGS) -c $< -o $@
+
 # nanojpeg 是第三方源码（MIT），不套用项目自身的 -DUNICODE 等旗标，
 # 并且关掉它自身的警告噪音 —— 我们不改第三方代码。
 $(BUILD)/nanojpeg.o: src/third_party/nanojpeg.c | $(BUILD)
@@ -134,7 +138,7 @@ $(BUILD)/h264bsd_%.o: $(H264BSD)/%.c | $(BUILD)
 
 VIEWER_OBJS := $(BUILD)/viewer.o $(BUILD)/carlife.o $(BUILD)/display.o \
                $(BUILD)/nanojpeg.o $(BUILD)/adbproxy.o $(BUILD)/adb.o \
-               $(BUILD)/adbio_ce.o $(BUILD)/rsa.o $(H264_OBJS)
+               $(BUILD)/adbio_ce.o $(BUILD)/rsa.o $(BUILD)/cllog.o $(H264_OBJS)
 
 $(VIEWER_EXE): $(VIEWER_OBJS)
 	$(CC) $(LDFLAGS) -o $@ $^ $(CORELIB) $(NETLIB)
