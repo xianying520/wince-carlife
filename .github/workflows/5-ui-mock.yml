@@ -39,6 +39,26 @@ jobs:
       - name: 渲染各状态的设计稿
         run: python3 tools/render_ui_mock.py ui-mock
 
+      - name: 查 coredll 里到底有哪些「字体/文本」函数可用
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          if [ ! -d "$HOME/tc/cegcc" ]; then
+            gh release download cegcc-arm --pattern 'cegcc-arm-mingw32ce.tar.gz' \
+              --dir "$RUNNER_TEMP" --clobber
+            mkdir -p "$HOME/tc"
+            tar xzf "$RUNNER_TEMP/cegcc-arm-mingw32ce.tar.gz" -C "$HOME/tc"
+          fi
+          export PATH="$HOME/tc/cegcc/bin:$PATH"
+          LIB=$(find "$HOME/tc" -name 'libcoredll.a' | head -1)
+          echo "导入库: $LIB"
+          echo "── 字体相关 ──"
+          arm-mingw32ce-nm "$LIB" 2>/dev/null | grep -iE ' T .*(Font|LOGFONT)' | sed 's/.* T //' | sort -u
+          echo "── 文本相关 ──"
+          arm-mingw32ce-nm "$LIB" 2>/dev/null | grep -iE ' T .*(DrawText|TextOut|ExtTextOut|GetText)' | sed 's/.* T //' | sort -u
+          echo "── 图形相关 ──"
+          arm-mingw32ce-nm "$LIB" 2>/dev/null | grep -iE ' T .*(Ellipse|Rectangle|CreatePen|CreateSolidBrush|FillRect|SelectObject)' | sed 's/.* T //' | sort -u
+
       - name: 顺带验证 ui.c 能为 ARM/WinCE 编译
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
