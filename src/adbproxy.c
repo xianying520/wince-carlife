@@ -13,6 +13,13 @@
 #ifndef ADBP_HOST_TEST
 #include "cllog.h"
 #define ADBP_LOG(...) cl_log(__VA_ARGS__)
+
+/* 把 ADB 握手的每一步接到日志上。
+ * 车机上只有一次机会，而「发到哪一步、手机回没回」是唯一能定位的手段。 */
+static void adb_trace_log(const char *what, unsigned int a, unsigned int b)
+{
+    cl_log("   [握手] %s  (0x%x, 0x%x)", what, a, b);
+}
 #else
 #define ADBP_LOG(...) ((void)0)
 #endif
@@ -98,6 +105,7 @@ static unsigned long g_tx_bytes, g_rx_bytes;
 static char      g_pkgs[2048];        /* 手机包名清单（截断保留） */
 static char      g_note[256];         /* 最近一次拉起的说明（现场排查用） */
 static int       g_tried_launch;      /* 只尝试拉起一次，避免反复折腾 */
+static int       g_fail_streak;       /* 连续握手失败次数（决定什么时候才真的重开设备） */
 
 /* ══ ADB 访问锁 ══════════════════════════════════════════════════════════════
  * 为什么必须有：ADB 对象 g_adb 是【共享】的，而它会同时被两个线程碰 ——
@@ -581,21 +589,60 @@ int adbp_start_with_io(ADB_IO io, const char * const *services, int n_services,
 
     /* ① 连上并完成认证 */
     {
-        int r = adb_connect(&g_adb, io);
+        int r;
+#ifndef ADBP_HOST_TEST
+        adb_set_trace(adb_trace_log);      /* 握手的每一步都进日志 */
+#endif
+        r = adb_connect(&g_adb, io);
         if (r != 0) {
             if (reason) {
-                if (r == -3)
+                switch (r) {
+                case -3:
                     snprintf(reason, (size_t)reason_cap,
                              "手机拒绝了 ADB 授权。"
                              "请在手机上点「允许 USB 调试」后重试");
-                else
+                    break;
+                case -4:
+                    /* 包发出去了、手机一个字都没回。
+                     * 这是「手机上没开 USB 调试」最典型的表现。 */
                     snprintf(reason, (size_t)reason_cap,
-                             "ADB 认证失败（错误 %d）", r);
+                             "手机没应答（USB 调试可能没打开，"
+                             "或没点「允许 USB 调试」）");
+                    break;
+                case -5:
+                    snprintf(reason, (size_t)reason_cap,
+                             "ADB 设备读写失败（设备名认到了，但数据进不去）");
+                    break;
+                default:
+                    snprintf(reason, (size_t)reason_cap,
+                             "ADB 握手失败（错误 %d）", r);
+                    break;
+                }
                 reason[reason_cap - 1] = 0;
             }
-            adbp_close_device();
+            /* ⚠ 这里【刻意不关设备】。
+             *   现场日志显示：每 2 秒一轮「开→失败→关」之后，
+             *   ADB1: 会接连十几次返回 110(ERROR_OPEN_FAILED)，
+             *   也就是这个驱动的关闭是脏的，关一次要几十秒才缓过来。
+             *   句柄留着，下一轮直接复用；只有设备确认消失（拔线）
+             *   或者连续失败很多次时才真的重开一次，避免句柄僵死。 */
+            g_fail_streak++;
+#ifdef ADBP_HOST_TEST
+            if (g_fail_streak >= 15) {
+                adbp_close_device();
+                g_fail_streak = 0;
+            }
+#else
+            if (adbio_ce_fatal() || g_fail_streak >= 15) {
+                ADBP_LOG("   设备句柄重开（连续失败 %d 次 / 设备消失 %d）",
+                         g_fail_streak, adbio_ce_fatal());
+                adbp_close_device();
+                g_fail_streak = 0;
+            }
+#endif
             return -4;
         }
+        g_fail_streak = 0;
     }
 
     /* ③ 每个服务：建立本地监听 + 打开一条转发通道 */
