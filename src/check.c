@@ -46,34 +46,38 @@ static void ln(const WCHAR *s)
     g_nline++;
 }
 
-static void ln_a(const char *tag, const char *val)
+/* ⚠ 上一个版本这里把 ANSI 字符串【逐字节】转成 WCHAR —— 而中文是 UTF-8，
+ *   一个汉字三个字节被当成三个字符，屏幕上就是一堆乱码（实测踩过）。
+ *   现在改成直接收宽字符串，不再做这种转换。 */
+static void ln_ok(const WCHAR *tag, const WCHAR *val)
 {
     WCHAR w[96];
     int i = 0, j;
-    for (j = 0; tag[j] && i < 90; j++) w[i++] = (WCHAR)(unsigned char)tag[j];
-    for (j = 0; val[j] && i < 94; j++) w[i++] = (WCHAR)(unsigned char)val[j];
+    for (j = 0; tag[j] && i < 90; j++) w[i++] = tag[j];
+    for (j = 0; val[j] && i < 94; j++) w[i++] = val[j];
     w[i] = 0;
     ln(w);
 }
 
 /* ── 一项测试：先写「开始」，做完写结果 ── */
-static void begin(int n, const char *name)
-{
-    char b[160];
-    _snprintf(b, sizeof(b) - 1, "[%d] %s ... ", n, name);
-    b[sizeof(b) - 1] = 0;
-    lg(b);
-    ln_a("... ", name);
-}
-
-static void done(int n, const char *name, int ok, const char *extra)
+/* ⚠ 测试名一律用【宽字符串】传进来 —— 窄字符串里放中文再逐字节转 WCHAR
+ *   就是上一个版本屏幕乱码的原因。日志那边用窄串（UTF-8）单独拼。 */
+static void begin(int n, const WCHAR *name, const char *nameA)
 {
     char b[200];
-    _snprintf(b, sizeof(b) - 1, "[%d] %s -> %s %s", n, name,
-              ok ? "OK" : "FAIL", extra ? extra : "");
+    _snprintf(b, sizeof(b) - 1, "[%d] %s ... ", n, nameA);
     b[sizeof(b) - 1] = 0;
     lg(b);
-    ln_a(ok ? "OK   " : "FAIL ", name);
+    ln_ok(L"...  ", name);
+}
+
+static void done(int n, const WCHAR *name, const char *nameA, int ok)
+{
+    char b[220];
+    _snprintf(b, sizeof(b) - 1, "[%d] %s -> %s", n, nameA, ok ? "OK" : "FAIL");
+    b[sizeof(b) - 1] = 0;
+    lg(b);
+    ln_ok(ok ? L"OK   " : L"FAIL ", name);
 }
 
 /* ══════════ 各项测试 ══════════ */
@@ -240,7 +244,7 @@ static LRESULT CALLBACK CheckProc(HWND h, UINT m, WPARAM w, LPARAM l)
      *   那主程序就是被它关掉的 —— 而这个计数会证明这一点。 */
     case WM_CLOSE:
         g_close_count++;
-        ln_a("!! WM_CLOSE ", "收到（故意不关，计数）");
+        ln(L"!! WM_CLOSE 收到（故意不关，只计数）");
         InvalidateRect(h, 0, FALSE);
         return 0;
 
@@ -281,11 +285,11 @@ int WINAPI WinMain(HINSTANCE hInst, HINSTANCE hPrev, LPWSTR lpCmd, int nShow)
     lg(" CarLife 车机体检程序");
     lg(" 每一项做完就刷盘；崩在哪一项，那一项就只有「...」没有结果。");
     lg("================================================");
-    begin(1, "打开日志文件");
-    done(1, "打开日志文件", ok, ok ? "" : "内部存储和本地都写不进去");
+    begin(1, L"打开日志文件", "打开日志文件");
+    done(1, L"打开日志文件", "打开日志文件", ok);
 
     /* 第 2 项：建窗口（完全照骨架：memset + 不检查扩展样式） */
-    begin(2, "建窗口（memset 清零 + WS_POPUP，不带 TOPMOST）");
+    begin(2, L"建窗口（memset 清零 + WS_POPUP，不带 TOPMOST）", "建窗口（不带 TOPMOST）");
     memset(&wc, 0, sizeof(wc));
     wc.style         = CS_HREDRAW | CS_VREDRAW;
     wc.lpfnWndProc   = CheckProc;
@@ -294,7 +298,7 @@ int WINAPI WinMain(HINSTANCE hInst, HINSTANCE hPrev, LPWSTR lpCmd, int nShow)
     wc.hbrBackground = (HBRUSH)GetStockObject(BLACK_BRUSH);
     wc.lpszClassName = L"WinCECarLifeCheck";
     ok = RegisterClassW(&wc) ? 1 : 0;
-    done(2, "注册窗口类", ok, "");
+    done(2, L"注册窗口类", "注册窗口类", ok);
     if (!ok) { MessageBoxW(0, L"RegisterClassW 失败", L"体检", MB_OK); return 1; }
 
     cx = GetSystemMetrics(SM_CXSCREEN);
@@ -302,31 +306,37 @@ int WINAPI WinMain(HINSTANCE hInst, HINSTANCE hPrev, LPWSTR lpCmd, int nShow)
     hwnd = CreateWindowExW(0, L"WinCECarLifeCheck", L"CarLife 体检",
                            WS_POPUP | WS_VISIBLE, 0, 0, cx, cy,
                            NULL, NULL, hInst, NULL);
-    done(3, "CreateWindowExW", hwnd ? 1 : 0, "");
+    done(3, L"CreateWindowExW", "CreateWindowExW", hwnd ? 1 : 0);
     if (!hwnd) { MessageBoxW(0, L"CreateWindowExW 失败", L"体检", MB_OK); return 2; }
 
     ShowWindow(hwnd, nShow ? nShow : SW_SHOW);
     UpdateWindow(hwnd);
-    done(4, "ShowWindow + UpdateWindow", 1, "");
+    done(4, L"ShowWindow + UpdateWindow", "ShowWindow + UpdateWindow", 1);
 
     /* 后面这些就是主程序用到、而骨架没用到的能力，逐项验 */
-    begin(5, "malloc 512KB");      done(5, "malloc 512KB", test_malloc(), "");
-    begin(6, "CreateSolidBrush ×4"); done(6, "CreateSolidBrush ×4", test_brushes(), "");
-    begin(7, "CreateFontIndirectW ×1"); done(7, "CreateFontIndirectW ×1", test_font1(), "");
-    begin(8, "CreateFontIndirectW ×5"); done(8, "CreateFontIndirectW ×5", test_font5(), "");
-    begin(9, "CreateThread");      done(9, "CreateThread", test_thread(), "");
-    begin(10, "GetDC(0)/ReleaseDC"); done(10, "GetDC(0)/ReleaseDC", test_getdc(), "");
+    begin(5, L"malloc 512KB", "malloc 512KB");
+    done(5, L"malloc 512KB", "malloc 512KB", test_malloc());
+    begin(6, L"CreateSolidBrush ×4", "CreateSolidBrush x4");
+    done(6, L"CreateSolidBrush ×4", "CreateSolidBrush x4", test_brushes());
+    begin(7, L"CreateFontIndirectW ×1", "CreateFontIndirectW x1");
+    done(7, L"CreateFontIndirectW ×1", "CreateFontIndirectW x1", test_font1());
+    begin(8, L"CreateFontIndirectW ×5", "CreateFontIndirectW x5");
+    done(8, L"CreateFontIndirectW ×5", "CreateFontIndirectW x5", test_font5());
+    begin(9, L"CreateThread", "CreateThread");
+    done(9, L"CreateThread", "CreateThread", test_thread());
+    begin(10, L"GetDC(0)/ReleaseDC", "GetDC(0)/ReleaseDC");
+    done(10, L"GetDC(0)/ReleaseDC", "GetDC(0)/ReleaseDC", test_getdc());
 
     {   /* 第 11 项：双线程同时写日志 —— 主程序那个竞态 */
         int i;
-        begin(11, "双线程同时写日志 500 轮（竞态复现）");
+        begin(11, L"双线程同时写日志 500 轮（竞态复现）", "双线程同时写日志 500 轮");
         ok = test_race();
-        done(11, "双线程同时写日志 500 轮", ok, "");
+        done(11, L"双线程同时写日志 500 轮", "双线程同时写日志 500 轮", ok);
         for (i = 0; i < 50; i++) { InvalidateRect(hwnd, 0, FALSE); UpdateWindow(hwnd); }
     }
 
-    begin(12, "InvalidateRect + UpdateWindow ×50");
-    done(12, "InvalidateRect + UpdateWindow ×50", 1, "");
+    begin(12, L"InvalidateRect + UpdateWindow ×50", "InvalidateRect + UpdateWindow x50");
+    done(12, L"InvalidateRect + UpdateWindow ×50", "InvalidateRect + UpdateWindow x50", 1);
 
     ln(L"────────────────────────────");
     ln(L"全部 12 项跑完，没有崩。");
