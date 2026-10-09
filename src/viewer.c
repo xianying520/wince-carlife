@@ -88,6 +88,10 @@ static volatile int g_log_ready = 0;
  *   会话线程在开始连接之前把它的值写进日志，仍然能告诉我们界面走到哪一步了。 */
 static volatile int g_boot_step = 0;
 
+/* 收到过几次 WM_CLOSE。车机外壳有可能在偷偷关我们的窗口 ——
+ * 体检程序里这一项是关键证据，主程序里也留着，方便从日志看。 */
+static int      g_close_seen = 0;
+
 /* 把"不是 JPEG"的帧存到 U 盘上，让用户带回来。
  * 为什么必须做：手机推的到底是 JPEG 还是 H.264，决定我们要不要移植一个
  * H.264 解码器 —— 这是整个项目剩下的最大未知数。而只要头几个字节就能
@@ -592,9 +596,19 @@ static LRESULT CALLBACK WndProc(HWND h, UINT m, WPARAM w, LPARAM l)
         }
         return 0;
 
+    /* ⚠⚠ WM_CLOSE 不再销毁窗口退出。
+     *
+     *   骨架程序**根本没有这个分支**（它走 DefWindowProc），而它能好好留在屏幕上；
+     *   主程序却在这里主动退出。如果车机外壳会往窗口发 WM_CLOSE，
+     *   那主程序就是被它关掉的 —— 表现正是「闪一下就没了」。
+     *
+     *   体检程序专门把 WM_CLOSE 计数显示在屏幕上验证这一点。
+     *   现在改成：记一笔、重画，但【绝不退出】。
+     *   真正退出只走右下角那个「退出」按钮。 */
     case WM_CLOSE:
-        g_quit = 1;
-        DestroyWindow(h);
+        g_close_seen++;
+        cl_log("收到 WM_CLOSE（第 %d 次）—— 按设计【不退出】", g_close_seen);
+        InvalidateRect(h, 0, FALSE);
         return 0;
 
     case WM_DESTROY:
@@ -1183,10 +1197,16 @@ int WINAPI WinMain(HINSTANCE hi, HINSTANCE hp, LPWSTR cmdline, int show)
     rc.right = GetSystemMetrics(SM_CXSCREEN);
     rc.bottom = GetSystemMetrics(SM_CYSCREEN);
 
-    /* ⚠ WS_EX_TOPMOST（裸值 0x8，不依赖头文件里有没有定义）：
-     *   不加的话窗口有可能被车机的桌面/启动器盖住 ——
-     *   表现同样是「点了没反应、也不显示」，而程序其实跑得好好的。 */
-    g_hwnd = CreateWindowExW(0x00000008L, L"CarLifeView", L"CarLife 车机端",
+    /* ⚠⚠ 扩展样式必须是 0 —— 和骨架、和体检程序完全一致。
+     *
+     *   原来这里写了 WS_EX_TOPMOST（0x8），本意是防止被车机桌面盖住。
+     *   但车机实测结果是：
+     *     · 骨架（CreateWindowExW(0, …)）      → 窗口好好留着
+     *     · 体检程序（CreateWindowExW(0, …)）   → 12 项全过，窗口好好留着
+     *     · 主程序（WS_EX_TOPMOST）             → 闪一下就没了
+     *   「置顶窗口」在有些车机外壳上会被当成异常窗口处理甚至直接关掉。
+     *   实测优先于理论：改回 0。 */
+    g_hwnd = CreateWindowExW(0, L"CarLifeView", L"CarLife 车机端",
                              WS_POPUP | WS_VISIBLE,
                              0, 0, rc.right, rc.bottom,
                              0, 0, hi, 0);
