@@ -77,6 +77,20 @@ $(BUILD)/adbio_ce.o: src/adbio_ce.c src/adbio_ce.h src/adb.h | $(BUILD)
 $(BUILD)/adbproxy.o: src/adbproxy.c src/adbproxy.h src/adb.h src/adbio_ce.h | $(BUILD)
 	$(CC) $(CFLAGS) -c $< -o $@
 
+# ── 车机体检程序：结构照骨架来，逐项验主程序用到的能力 ──
+CHECK_EXE := $(BUILD)/WinCE-CarLifeCheck.exe
+
+.PHONY: check_exe
+check_exe: $(CHECK_EXE)
+	@echo "==> 体检程序: $(CHECK_EXE)"
+	@ls -l $(CHECK_EXE)
+
+$(BUILD)/check.o: src/check.c | $(BUILD)
+	$(CC) $(CFLAGS) -c $< -o $@
+
+$(CHECK_EXE): $(BUILD)/check.o
+	$(CC) $(LDFLAGS) -o $@ $^ $(CORELIB)
+
 $(MAIN_EXE): $(BUILD)/main.o
 	$(CC) $(LDFLAGS) -o $@ $^ $(CORELIB)
 
