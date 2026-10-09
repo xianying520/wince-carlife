@@ -42,6 +42,16 @@ int  adbp_launch_phone_app(char *detail, int cap);
 /* 手机包名清单（诊断用，可能在手机上直接看出 CarLife 叫什么） */
 const char *adbp_phone_packages(void);
 
+/* 借已经建好的 ADB 通道，在手机上执行一条 shell 命令，把输出取回来。
+ *
+ * 为什么需要它：ADB 一旦通了，手机对我们就不是一个黑盒了 ——
+ * 可以【直接问手机】它现在处在哪种 USB 配置里（getprop sys.usb.config），
+ * 而不是靠猜「传输文件 / 连接车辆」哪个才行。现场那种二选一的争论，
+ * 用一条命令就能变成数据。
+ *
+ * 成功返回 0，输出写进 out（已去掉行尾 \r\n 并截断）；失败返回负数。 */
+int  adbp_shell(const char *cmd, char *out, int cap, int timeout_ms);
+
 /* 最近一次"拉起手机端"的结果说明（现场排查用） */
 const char *adbp_last_note(void);
 
