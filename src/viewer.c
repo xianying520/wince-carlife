@@ -1231,13 +1231,17 @@ int WINAPI WinMain(HINSTANCE hi, HINSTANCE hp, LPWSTR cmdline, int show)
         }
     }
     cl_log("界面 1/4 开始建字体（CreateFontIndirectW ×5）");
+    cl_log_sync();   /* ⚠ 每一步之后都强制刷盘：万一下一步就崩，
+                      *   这一行必须已经在盘上，否则日志等于白记。 */
     ui_init(g_hwnd);
     cl_log("界面 2/4 字体和画刷已建好");
+    cl_log_sync();
     sync_button_labels();
     ui_headline(L"用 USB 线把手机连到车机",
                 L"然后在手机上打开「USB 调试」并点「允许」");
     stage_set(0, UI_ST_ACTIVE, L"正在准备…");
     cl_log("界面 3/4 开始画完整界面（已全部改用 FillRect 一类的验证过的 API）");
+    cl_log_sync();
     InvalidateRect(g_hwnd, 0, FALSE);
     UpdateWindow(g_hwnd);            /* 现在才是新界面（走 ui_paint_connect）*/
     cl_log("界面 4/4 完整界面绘制完成");
