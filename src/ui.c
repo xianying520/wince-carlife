@@ -29,6 +29,7 @@ static WCHAR g_st_detail[UI_STEPS][72];
 static WCHAR g_head1[96], g_head2[96], g_foot[200];
 static WCHAR g_btn[3][24];
 static int   g_btn_pressed = -1;
+static int   g_ready = 0;      /* 界面资源是否已建好 */
 
 /* 按屏宽等比缩放（车机就是 800x480，这里只是留个余量）*/
 static int px(int v) { return v * g_sw / UI_BASE_W; }
@@ -139,6 +140,46 @@ void ui_init(HWND hwnd)
     }
 
     reset_labels();
+
+    /* 到这里说明字体和画刷都建出来了 —— 后面才允许走「完整界面」那条路 */
+    g_ready = 1;
+}
+
+int ui_ready(void) { return g_ready; }
+
+/* ══════════ 兜底画面：只用骨架验证过的 API ══════════
+ * ⚠⚠ 这个函数里【只准用】下面这几个：
+ *      FillRect / GetStockObject / SelectObject / SetBkMode / SetTextColor / DrawTextW
+ *   绝不可以用 CreateFontIndirectW / CreatePen / Ellipse / Rectangle ——
+ *   那几个是本程序新引入的，在你这台车机上【还没被验证过】。
+ *   它存在的意义：哪怕新界面那些调用全都不行，
+ *   用户也能看到这一屏，从而知道「程序起来了，是界面没画出来」——
+ *   而不是第三次面对一个什么都不发生的屏幕。 */
+void ui_paint_minimal(HDC dc, const RECT *rc)
+{
+    RECT r = *rc;
+    HGDIOBJ of;
+
+    FillRect(dc, &r, (HBRUSH)GetStockObject(BLACK_BRUSH));
+
+    SetBkMode(dc, TRANSPARENT);
+    SetTextColor(dc, RGB(230, 230, 230));
+    of = SelectObject(dc, GetStockObject(SYSTEM_FONT));
+
+    r.left += 14;
+    r.top  += 14;
+    DrawTextW(dc, L"CarLife 车机端 —— 程序已启动", -1, &r,
+              DT_LEFT | DT_TOP | DT_SINGLELINE);
+
+    r.top += 26;
+    DrawTextW(dc, L"正在初始化界面 ...", -1, &r,
+              DT_LEFT | DT_TOP | DT_SINGLELINE);
+
+    r.top += 26;
+    DrawTextW(dc, L"（如果这一行一直不变，请把这一屏拍下来发给开发者）", -1, &r,
+              DT_LEFT | DT_TOP | DT_SINGLELINE);
+
+    SelectObject(dc, of);
 }
 
 void ui_free(void)
