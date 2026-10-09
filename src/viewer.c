@@ -464,6 +464,10 @@ static LRESULT CALLBACK WndProc(HWND h, UINT m, WPARAM w, LPARAM l)
         if (g_disp.fb) {
             disp_paint(&g_disp, dc, &area);
             ui_paint_statusbar(dc, &rc);      /* 连上了：只剩一条细状态条 */
+        } else if (!ui_ready()) {
+            /* 界面资源还没建好（或建失败了）—— 走兜底画法，
+             * 只用骨架程序在真机上验证过的 API，保证屏幕上有东西。 */
+            ui_paint_minimal(dc, &rc);
         } else {
             ui_paint_connect(dc, &rc);        /* 没连上：整屏连接进度板 */
         }
@@ -765,6 +769,21 @@ static DWORD WINAPI session_thread(LPVOID param)
             Sleep(1200);              /* 让用户看清在哪儿 */
         }
     }
+
+    /* ⚠ 网络栈初始化也在这里做，【不放主线程】——
+     *   它在某些 ROM 上会卡住，留在主线程上就是又一次
+     *   「窗口建好了但消息循环起不来、屏幕一片空白」。 */
+    {
+        WSADATA wsa;
+        if (WSAStartup(MAKEWORD(2, 2), &wsa) != 0) {
+            cl_log("第3步 网络栈启动失败（车机没有 ws2）—— 没法连手机了");
+            set_status(L"网络栈启动失败：车机没有 ws2");
+            /* 没网络就连不上，但窗口和界面是活的，用户至少看得见 */
+        } else {
+            cl_log("第3步 网络栈已启动");
+        }
+    }
+    cl_log_sync();
 
     cl_log("──────── 自检结束，开始连接 ────────");
 
@@ -1103,7 +1122,6 @@ static void run_session(void)
 int WINAPI WinMain(HINSTANCE hi, HINSTANCE hp, LPWSTR cmdline, int show)
 {
     WNDCLASSW wc;
-    WSADATA wsa;
     RECT rc;
     MSG msg;
 
@@ -1162,6 +1180,9 @@ int WINAPI WinMain(HINSTANCE hi, HINSTANCE hp, LPWSTR cmdline, int show)
     }
 
     ShowWindow(g_hwnd, SW_SHOW);
+    /* 这一次 UpdateWindow 会让 WM_PAINT 走【兜底画法】——
+     * 此时 g_ready 还是 0，用的全是骨架验证过的 API。
+     * 于是【屏幕在任何新代码之前就已经有东西了】。 */
     UpdateWindow(g_hwnd);
 
     /* ══ 主线程到此为止：下面只建界面、然后跑消息循环，【一律不碰文件】══
@@ -1184,7 +1205,8 @@ int WINAPI WinMain(HINSTANCE hi, HINSTANCE hp, LPWSTR cmdline, int show)
     ui_headline(L"用 USB 线把手机连到车机",
                 L"然后在手机上打开「USB 调试」并点「允许」");
     stage_set(0, UI_ST_ACTIVE, L"正在准备…");
-    UpdateWindow(g_hwnd);            /* 让进度板立刻真的画一次 */
+    InvalidateRect(g_hwnd, 0, FALSE);
+    UpdateWindow(g_hwnd);            /* 现在才是新界面（走 ui_paint_connect）*/
 
     /* 收帧缓冲也是纯内存 */
     g_rxcap = RX_CAP;
@@ -1196,9 +1218,10 @@ int WINAPI WinMain(HINSTANCE hi, HINSTANCE hp, LPWSTR cmdline, int show)
     }
 
 
-    if (WSAStartup(MAKEWORD(2, 2), &wsa) != 0) {
-        set_status(L"WSAStartup 失败：车机没有 ws2 网络栈");
-    } else {
+    {
+        /* ⚠ WSAStartup 也【搬到会话线程里去做】。
+         *   网络栈初始化在某些 ROM 上会卡住，留在主线程上就是又一次
+         *   「窗口建了但消息循环起不来」。主线程现在真的只剩窗口和消息循环。 */
         /* ⚠ 连接过程必须放后台线程。
          *   原来 run_session() 直接在主线程跑，而它里面有等待用户的循环
          *   （等插线、等手机点「允许 USB 调试」）—— 主线程一被占住，
@@ -1207,8 +1230,13 @@ int WINAPI WinMain(HINSTANCE hi, HINSTANCE hp, LPWSTR cmdline, int show)
          *   用户根本不知道要干什么。放后台线程后提示才能实时更新。 */
         DWORD tid = 0;
         g_hthr = CreateThread(0, 0, session_thread, 0, 0, &tid);
-        if (!g_hthr)
-            run_session();               /* 开不出线程就退回老办法，至少还能跑 */
+        if (!g_hthr) {
+            /* ⚠ 绝不退回「在主线程上跑会话」那条老路：
+             *   会话里有 120 秒的等待循环，一放主线程，消息循环就到不了，
+             *   窗口又会变成一片空白 —— 那正是已经踩过两次的坑。
+             *   开不出线程就直接告诉用户，窗口保持活着。 */
+            set_status(L"线程创建失败：车机资源不足，请重启车机后再试");
+        }
     }
 
     /* 留在窗口里，让用户看清最后的状态 */
