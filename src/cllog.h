@@ -39,6 +39,13 @@ void cl_log_hex(const char *tag, const unsigned char *d, int n);
  * 只写前 maxTotal 字节，避免把车机塞满。 */
 void cl_log_dumpfile(const char *name, const unsigned char *d, int n);
 
+/* 日志写入失败过几次（0 = 一直正常）。非 0 说明盘写不进去了，
+ * 上层要把这件事显示到屏幕上 —— 因为日志本身已经不可靠了。 */
+int  cl_log_write_failed(void);
+
+/* 强制刷盘。关键几行写完后调一次，防止程序崩了把缓存内容全丢掉。 */
+void cl_log_sync(void);
+
 const char *cl_log_path(void);     /* 日志文件的完整路径（ANSI，给屏幕显示用） */
 const char *cl_log_dir(void);      /* 日志所在目录 */
 
