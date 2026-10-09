@@ -125,42 +125,109 @@ void cl_log_sync(void)
     log_lock_leave();
 }
 
+/* ── 手写的小工具：不借用 CRT 的 printf 家族 ── */
+static int put_str(char *o, int cap, int p, const char *v)
+{
+    int k = 0;
+    if (!v) v = "(null)";
+    while (v[k] && p < cap - 1) o[p++] = v[k++];
+    return p;
+}
+
+static int put_ulong(char *o, int cap, int p, unsigned long v)
+{
+    char t[24];
+    int n = 0, k;
+    if (v == 0) t[n++] = '0';
+    while (v > 0 && n < 22) { t[n++] = (char)('0' + (v % 10)); v /= 10; }
+    for (k = n - 1; k >= 0 && p < cap - 1; k--) o[p++] = t[k];
+    return p;
+}
+
+static int put_long(char *o, int cap, int p, long v)
+{
+    if (v < 0) { if (p < cap - 1) o[p++] = '-'; return put_ulong(o, cap, p, (unsigned long)(-v)); }
+    return put_ulong(o, cap, p, (unsigned long)v);
+}
+
+static int put_hex(char *o, int cap, int p, unsigned long v, int upper)
+{
+    const char *d = upper ? "0123456789ABCDEF" : "0123456789abcdef";
+    char t[24];
+    int n = 0, k;
+    if (v == 0) t[n++] = '0';
+    while (v > 0 && n < 22) { t[n++] = d[v & 0xF]; v >>= 4; }
+    for (k = n - 1; k >= 0 && p < cap - 1; k--) o[p++] = t[k];
+    return p;
+}
+
+/* 写一行日志。
+ *
+ * ⚠⚠ 这里【刻意不用 _vsnprintf / _snprintf】。
+ *
+ *   原因：车机上反复实测发现，日志总在写了几行之后断掉，
+ *   而把范围一路缩下来之后，剩下的唯一嫌疑就是这两个 CRT 函数 ——
+ *   它们是 cl_log 里唯一没被单独验证过的东西。
+ *   对照：体检程序自己那个日志函数只用 WriteFile + FlushFileBuffers，
+ *   从来没有出过问题。
+ *
+ *   所以这里改成手写最小格式化（%s %d %u %x %X，够本项目用），
+ *   整个日志路径就只剩：手写拼串 + GetTickCount + 临界区 + WriteFile + Flush。
+ *   这几个函数在你这台车机上都已实测通过。 */
 void cl_log(const char *fmt, ...)
 {
-    char buf[512];
-    char line[600];
+    char line[640];
     va_list ap;
-    unsigned long ms;
-    int n;
+    unsigned long ms, f;
+    int p = 0, i;
 
     if (g_h == INVALID_HANDLE_VALUE) return;
 
     log_lock_enter();
 
-    buf[0] = 0;
-    va_start(ap, fmt);
-    _vsnprintf(buf, sizeof(buf) - 1, fmt, ap);
-    va_end(ap);
-    buf[sizeof(buf) - 1] = 0;
-
+    /* 时间戳 [秒.毫秒] —— 手写，同样不借 CRT */
     ms = GetTickCount() - g_t0;
-    n = _snprintf(line, sizeof(line) - 3, "[%lu.%03lu] %s\r\n",
-                  ms / 1000, ms % 1000, buf);
-    if (n < 0) n = 0;
-    if (n > (int)sizeof(line) - 1) n = (int)sizeof(line) - 1;
-    write_bytes(line, n);
+    line[p++] = '[';
+    p = put_ulong(line, (int)sizeof(line), p, ms / 1000);
+    line[p++] = '.';
+    f = ms % 1000;
+    line[p++] = (char)('0' + (int)((f / 100) % 10));
+    line[p++] = (char)('0' + (int)((f / 10) % 10));
+    line[p++] = (char)('0' + (int)(f % 10));
+    line[p++] = ']';
+    line[p++] = ' ';
 
-    /* ⚠⚠ 每一行都立刻刷盘，【不能只靠 WriteFile】。
-     *
-     *   踩过的坑：原来只有 cl_log_sync() 才刷。于是程序一崩，
-     *   最后那几行还停在系统缓存里，全部丢失 ——
-     *   而它们恰好就是「崩在哪一步」的唯一证据。
-     *   车机上实测：主线程明明调了 cl_log("界面 1/4 …")，
-     *   日志里却一个字都没有，就是这个原因，白查了好几轮。
-     *
-     *   代价是慢一点，但日志的完整性比速度重要得多。 */
-    if (g_h != INVALID_HANDLE_VALUE)
-        FlushFileBuffers(g_h);
+    /* 正文 */
+    va_start(ap, fmt);
+    for (i = 0; fmt[i] && p < (int)sizeof(line) - 8; i++) {
+        if (fmt[i] != '%') { line[p++] = fmt[i]; continue; }
+        i++;
+        switch (fmt[i]) {
+        case 's': p = put_str(line, (int)sizeof(line), p, va_arg(ap, const char *)); break;
+        case 'd': p = put_long(line, (int)sizeof(line), p, (long)va_arg(ap, int)); break;
+        case 'u': p = put_ulong(line, (int)sizeof(line), p, (unsigned long)va_arg(ap, unsigned int)); break;
+        case 'x': p = put_hex(line, (int)sizeof(line), p, va_arg(ap, unsigned long), 0); break;
+        case 'X': p = put_hex(line, (int)sizeof(line), p, va_arg(ap, unsigned long), 1); break;
+        case 'l':                                  /* %lu */
+            i++;
+            if (fmt[i] == 'u') p = put_ulong(line, (int)sizeof(line), p, va_arg(ap, unsigned long));
+            else if (fmt[i] == 'd') p = put_long(line, (int)sizeof(line), p, (long)va_arg(ap, long));
+            else { line[p++] = 'l'; if (fmt[i]) line[p++] = fmt[i]; }
+            break;
+        case '%': line[p++] = '%'; break;
+        case 0:   i--; break;
+        default:  line[p++] = '?'; break;
+        }
+    }
+    va_end(ap);
+
+    line[p++] = '\r';
+    line[p++] = '\n';
+
+    write_bytes(line, p);
+
+    /* 每行立刻刷盘：崩了也不丢 —— 见上面那段说明 */
+    FlushFileBuffers(g_h);
 
     log_lock_leave();
 }
@@ -179,26 +246,38 @@ void cl_log_step(const char *what, int ok, const char *why)
         cl_log("   XX   %s    ← %s", what, why ? why : "原因未知");
 }
 
+/* 十六进制 dump。
+ * ⚠ 同样【不用 _snprintf】—— 见 cl_log 上面那段说明。手写拼。 */
 void cl_log_hex(const char *tag, const unsigned char *d, int n)
 {
+    const char *hexd = "0123456789ABCDEF";
     char line[128];
-    int i, k;
+    int i, k, p;
 
     if (!d || n <= 0) return;
     if (n > 128) n = 128;
 
     for (i = 0; i < n; i += 16) {
-        int p = 0, j;
-        p += _snprintf(line + p, 16, "%04X  ", i);
-        for (j = 0; j < 16; j++) {
-            if (i + j < n)
-                p += _snprintf(line + p, 8, "%02X ", d[i + j]);
-            else
-                p += _snprintf(line + p, 8, "   ");
+        p = 0;
+        line[p++] = hexd[(i >> 12) & 0xF];
+        line[p++] = hexd[(i >> 8) & 0xF];
+        line[p++] = hexd[(i >> 4) & 0xF];
+        line[p++] = hexd[i & 0xF];
+        line[p++] = ' ';
+        line[p++] = ' ';
+        for (k = 0; k < 16 && p < (int)sizeof(line) - 24; k++) {
+            if (i + k < n) {
+                unsigned char b = d[i + k];
+                line[p++] = hexd[(b >> 4) & 0xF];
+                line[p++] = hexd[b & 0xF];
+                line[p++] = ' ';
+            } else {
+                line[p++] = ' '; line[p++] = ' '; line[p++] = ' ';
+            }
         }
-        p += _snprintf(line + p, 4, " |");
-        for (j = 0; j < 16 && i + j < n; j++) {
-            unsigned char c = d[i + j];
+        line[p++] = '|';
+        for (k = 0; k < 16 && i + k < n && p < (int)sizeof(line) - 3; k++) {
+            unsigned char c = d[i + k];
             line[p++] = (c >= 32 && c < 127) ? (char)c : '.';
         }
         line[p++] = '|';
