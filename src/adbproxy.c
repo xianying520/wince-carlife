@@ -628,12 +628,12 @@ int adbp_start_with_io(ADB_IO io, const char * const *services, int n_services,
              *   或者连续失败很多次时才真的重开一次，避免句柄僵死。 */
             g_fail_streak++;
 #ifdef ADBP_HOST_TEST
-            if (g_fail_streak >= 15) {
+            if (g_fail_streak >= 4) {
                 adbp_close_device();
                 g_fail_streak = 0;
             }
 #else
-            if (adbio_ce_fatal() || g_fail_streak >= 15) {
+            if (adbio_ce_fatal() || g_fail_streak >= 4) {
                 ADBP_LOG("   设备句柄重开（连续失败 %d 次 / 设备消失 %d）",
                          g_fail_streak, adbio_ce_fatal());
                 adbp_close_device();
