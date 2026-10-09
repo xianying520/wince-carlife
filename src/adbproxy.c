@@ -137,17 +137,95 @@ static void adbp_lock_init(void)
 #define ADBP_UNLOCK() LeaveCriticalSection(&g_adb_lock)
 #endif
 
+/* 手写的最小格式化：只覆盖本项目用到的 %s %d %u %x %%。
+ *
+ * ⚠⚠ 为什么坚决不用 _vsnprintf：
+ *
+ *   在整份工程里，`_vsnprintf` 只被【这一个函数】引用 ——
+ *   车机上跑 `arm-mingw32ce-nm` 数导入表就能看出来。
+ *   而现场日志的表现是：每次都在【刚握完手】那一行断掉，后面一个字都没有。
+ *
+ *   紧接着握手成功之后要跑的代码里，第一个会被调用的、
+ *   而且以前从来没在你这台车机上跑过的东西，就是这个 _vsnprintf。
+ *   （握手之前的所有路径，走的都是 snprintf / sprintf / cl_log 的手写格式化，
+ *    那些都已经在车上跑过成千上万次了。）
+ *
+ *   cllog.c 早就因为同一家族的函数在车上崩过 —— 当时把 _vsnprintf 换成
+ *   手写格式化，日志立刻就正常了。既然有前科，这里没有任何理由再赌一次。
+ *   手写 40 行，行为完全确定，还能顺手把线程安全问题一起解掉。 */
+static void status_vfmt(char *out, int cap, const char *fmt, va_list ap)
+{
+    int o = 0;
+
+    for (; *fmt && o < cap - 1; fmt++) {
+        if (*fmt != '%') { out[o++] = *fmt; continue; }
+        fmt++;
+
+        if (*fmt == 's') {
+            const char *v = va_arg(ap, const char *);
+            if (!v) v = "(null)";
+            while (*v && o < cap - 1) out[o++] = *v++;
+        } else if (*fmt == 'd' || *fmt == 'u' || *fmt == 'x') {
+            char t[16];
+            int  n = 0, k;
+            unsigned int u;
+            const char  *D;
+            unsigned int base;
+
+            if (*fmt == 'd') {
+                int sv = va_arg(ap, int);
+                if (sv < 0) {
+                    if (o < cap - 1) out[o++] = '-';
+                    u = (unsigned int)(0u - (unsigned int)sv);
+                } else {
+                    u = (unsigned int)sv;
+                }
+                D = "0123456789";
+                base = 10;
+            } else if (*fmt == 'u') {
+                u = va_arg(ap, unsigned int);
+                D = "0123456789";
+                base = 10;
+            } else {
+                u = va_arg(ap, unsigned int);
+                D = "0123456789abcdef";
+                base = 16;
+            }
+            do { t[n++] = D[u % base]; u /= base; } while (u && n < 15);
+            for (k = n - 1; k >= 0 && o < cap - 1; k--) out[o++] = t[k];
+        } else if (*fmt == '%') {
+            if (o < cap - 1) out[o++] = '%';
+        } else if (*fmt == 0) {
+            break;
+        } else {
+            if (o < cap - 1) out[o++] = '?';
+        }
+    }
+    out[o] = 0;
+}
+
 static void set_status(const char *fmt, ...)
 {
+    char    tmp[256];
     va_list ap;
+    int     i;
+
     va_start(ap, fmt);
-    _vsnprintf(g_status, sizeof(g_status) - 1, fmt, ap);
+    status_vfmt(tmp, (int)sizeof(tmp), fmt, ap);
     va_end(ap);
-    g_status[sizeof(g_status) - 1] = 0;
+
+    /* 会话线程和转发线程都会调它，所以拷贝到共享缓冲时上锁。
+     * 先在【栈上】把整句拼好，锁里只做一次定长拷贝 —— 锁的持有时间极短。 */
+    adbp_lock_init();
+    ADBP_LOCK();
+    for (i = 0; i < (int)sizeof(g_status) - 1 && tmp[i]; i++)
+        g_status[i] = tmp[i];
+    g_status[i] = 0;
+    ADBP_UNLOCK();
 
     /* 转发器说的每句话都进日志。这一层最容易出问题（ADB 命令、通道、端口），
      * 现场看不出来，只有日志能带回来。主机测试里 ADBP_LOG 是空的。 */
-    ADBP_LOG("转发器 | %s", g_status);
+    ADBP_LOG("转发器 | %s", tmp);
 }
 
 static void set_nonblock(SOCKET s)
@@ -158,18 +236,33 @@ static void set_nonblock(SOCKET s)
 
 static void close_conn(int i)
 {
-    /* 整个函数体在锁里：它要动 g_adb 的通道表 */
     if (!g_conn[i].used)
         return;
+
+    /* ⚠⚠ 这里原来有一颗地雷，必须记下来：
+     *
+     *     if (g_conn[i].chan > 0)
+     *         ADBP_LOCK();                        ← 宏展开成 EnterCriticalSection(...)
+     *         adb_close_chan(&g_adb, ...);
+     *         ADBP_UNLOCK();                      ← 没有大括号！
+     *
+     *   ADBP_LOCK() 是宏，展开后是一句普通语句，所以 if 只管住了
+     *   EnterCriticalSection 那一句。结果是：
+     *     · chan <= 0 时根本没进锁，却照样 LeaveCriticalSection；
+     *     · 对一把「自己没持有的」临界区调用 LeaveCriticalSection，
+     *       在 WinCE 上会把它的锁计数/持有者搞乱 —— 之后两把线程可能同时
+     *       进锁，g_adb 的通道表就被写坏，表象是「数据莫名少了/通道莫名关了」，
+     *       和当年那次「加了锁反而更快崩」是同一类毛病，极难查。
+     *   现在按注释里本来就想表达的意思改：整个函数体在锁里。 */
+    ADBP_LOCK();
     if (g_conn[i].chan > 0)
-        ADBP_LOCK();
         adb_close_chan(&g_adb, g_conn[i].chan);
-        ADBP_UNLOCK();
     if (g_conn[i].sock != INVALID_SOCKET)
         closesocket(g_conn[i].sock);
     g_conn[i].used = 0;
     g_conn[i].sock = INVALID_SOCKET;
     g_conn[i].chan = 0;
+    ADBP_UNLOCK();
 }
 
 static void conn_push_to_phone(int i, const unsigned char *d, int n)
@@ -415,12 +508,18 @@ static ADBP_THREAD_RET ADBP_API adbp_thread(ADBP_THREAD_ARG arg)
     unsigned char *buf = (unsigned char *)malloc(ADBP_BUF);
     (void)arg;
 
+    /* 线程一进来就先记一笔 —— 有了它，日志就能分清
+     * 「卡在起线程之前」和「线程起来了但里面卡住」这两种完全不同的情况。 */
+    ADBP_LOG("   [转发线程] 已启动，要转发 %d 条服务", g_nsvc);
+
     if (!buf) {
+        ADBP_LOG("   [转发线程] 内存不足（要 %d 字节）", (int)ADBP_BUF);
         set_status("内存不足，转发器无法启动");
         g_stop = 1;
         g_running = 0;
         return 0;
     }
+    ADBP_LOG("   [转发线程] 缓冲已分配 %d 字节", (int)ADBP_BUF);
 
     while (!g_stop) {
         fd_set rf;
@@ -643,9 +742,13 @@ int adbp_start_with_io(ADB_IO io, const char * const *services, int n_services,
             return -4;
         }
         g_fail_streak = 0;
+        /* ⚠ 这一行是分界线：现场上一次的日志就断在这之前。
+         *   从这里往后每一步都补了日志 —— 万一又断，断在哪一步一目了然。 */
+        ADBP_LOG("   [转发] ADB 握手成功，开始建本地监听");
     }
 
     /* ③ 每个服务：建立本地监听 + 打开一条转发通道 */
+    ADBP_LOG("   [转发] 要建 %d 条本地监听", n_services);
     for (i = 0; i < n_services; i++) {
         SOCKET s;
         struct sockaddr_in sa;
@@ -653,23 +756,31 @@ int adbp_start_with_io(ADB_IO io, const char * const *services, int n_services,
 
         s = socket(AF_INET, SOCK_STREAM, 0);
         if (s == INVALID_SOCKET) {
+            ADBP_LOG("   [转发] 第 %d 条建 socket 失败（错误 %d）",
+                     i + 1, (int)WSAGetLastError());
             if (reason) snprintf(reason, (size_t)reason_cap, "建 socket 失败");
             goto fail;
         }
+        ADBP_LOG("   [转发] 第 %d 条 socket 已建好", i + 1);
         memset(&sa, 0, sizeof(sa));
         sa.sin_family = AF_INET;
         sa.sin_port   = 0;                      /* 让系统挑端口，避免撞车 */
         sa.sin_addr.s_addr = htonl(0x7F000001UL);   /* 只听本机 */
         if (bind(s, (struct sockaddr *)&sa, sizeof(sa)) != 0) {
+            ADBP_LOG("   [转发] 第 %d 条 bind 失败（错误 %d）",
+                     i + 1, (int)WSAGetLastError());
             if (reason) snprintf(reason, (size_t)reason_cap, "bind 失败");
             closesocket(s);
             goto fail;
         }
         if (listen(s, 2) != 0) {
+            ADBP_LOG("   [转发] 第 %d 条 listen 失败（错误 %d）",
+                     i + 1, (int)WSAGetLastError());
             if (reason) snprintf(reason, (size_t)reason_cap, "listen 失败");
             closesocket(s);
             goto fail;
         }
+        ADBP_LOG("   [转发] 第 %d 条 listen 成功", i + 1);
         set_nonblock(s);
 
         /* 取回系统分配的实际端口 */
@@ -689,7 +800,10 @@ int adbp_start_with_io(ADB_IO io, const char * const *services, int n_services,
         if (local_ports)
             local_ports[i] = g_svc[i].lport;
         g_nsvc = i + 1;
+        ADBP_LOG("   [转发] %s → 本机 127.0.0.1:%u 已在监听",
+                 g_svc[i].service, (unsigned)g_svc[i].lport);
     }
+    ADBP_LOG("   [转发] 本地监听全部就绪，准备起转发线程");
 
     /* ④ 起线程 */
 #ifdef ADBP_HOST_TEST
@@ -697,12 +811,15 @@ int adbp_start_with_io(ADB_IO io, const char * const *services, int n_services,
 #else
     g_thread = CreateThread(NULL, 0, adbp_thread, NULL, 0, &g_tid);
 #endif
+    ADBP_LOG("   [转发] CreateThread 返回 %lu", (unsigned long)g_thread);
     if (!g_thread) {
+        ADBP_LOG("   [转发] 建线程失败（错误 %lu）", (unsigned long)GetLastError());
         if (reason) snprintf(reason, (size_t)reason_cap, "建线程失败");
         goto fail;
     }
     g_running = 1;
     set_status("已连接手机，%d 条端口转发就绪", g_nsvc);
+    ADBP_LOG("   [转发] 全部就绪，返回成功");
     return 0;
 
 fail:
