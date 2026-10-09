@@ -150,6 +150,18 @@ void cl_log(const char *fmt, ...)
     if (n > (int)sizeof(line) - 1) n = (int)sizeof(line) - 1;
     write_bytes(line, n);
 
+    /* ⚠⚠ 每一行都立刻刷盘，【不能只靠 WriteFile】。
+     *
+     *   踩过的坑：原来只有 cl_log_sync() 才刷。于是程序一崩，
+     *   最后那几行还停在系统缓存里，全部丢失 ——
+     *   而它们恰好就是「崩在哪一步」的唯一证据。
+     *   车机上实测：主线程明明调了 cl_log("界面 1/4 …")，
+     *   日志里却一个字都没有，就是这个原因，白查了好几轮。
+     *
+     *   代价是慢一点，但日志的完整性比速度重要得多。 */
+    if (g_h != INVALID_HANDLE_VALUE)
+        FlushFileBuffers(g_h);
+
     log_lock_leave();
 }
 
