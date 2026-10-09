@@ -314,6 +314,10 @@ int adbio_ce_open(WCHAR *out_name, int name_cap, char *reason, int reason_cap)
             g_h = h;
             g_err_run = 0;
             w_copy(g_name, g_cands[i], 64);
+            /* 刚打开时给驱动一点时间把 USB 管道挂好。
+             * 被 USB 枚举/管道建立挡掉第一包是这类驱动常见的小毛病，
+             * 代价只有 150 毫秒，而且只在新开的那一次付。 */
+            Sleep(150);
             if (out_name && name_cap > 0)
                 w_copy(out_name, g_cands[i], name_cap);
             if (reason && reason_cap > 0)
