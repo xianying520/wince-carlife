@@ -257,12 +257,24 @@ const char *cl_log_dir(void)  { return g_dirA; }
 
 int cl_log_open(void)
 {
+    /* ⚠ 顺序很关键：【车机内部存储优先，U 盘放最后】。
+     *
+     *   实锤：程序放在 U 盘上跑、日志也写 U 盘，结果第 4 次 WriteFile
+     *   就卡死/崩掉了（日志永远只有 3 行），而当时它跑在主线程上，
+     *   于是整个程序跟着卡死 —— 窗口建出来了却一次都没画过，
+     *   用户看到的就是「点了完全没反应」。
+     *
+     *   老 WinCE 的 U 盘驱动在写入上本来就脆弱，加上「从同一个盘读程序、
+     *   又往同一个盘写日志」这种用法，出问题的概率更高。
+     *   内部存储（iNAND）是车机自己的主存储，驱动成熟得多。
+     *
+     *   空串 = exe 自己所在目录（也就是 U 盘），放到最后兜底。 */
     static const WCHAR *cand[] = {
-        L"",                 /* 空串 = exe 自己所在目录，下面单独处理 */
         L"\\iNAND",
         L"\\Residentflash2",
         L"\\SDMEM",
         L"\\",
+        L"",                 /* 空串 = exe 目录（U 盘），兜底 */
         L"\\Windows"
     };
     WCHAR mod[MAX_PATH];
