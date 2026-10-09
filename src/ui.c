@@ -21,7 +21,6 @@ static HFONT  g_f_head, g_f_sub, g_f_step, g_f_detail, g_f_bar;
 static HBRUSH g_br_bg, g_br_panel;
 static HBRUSH g_br_dot[4];
 static HBRUSH g_br_wash;
-static HPEN   g_pn_dot[4];
 
 static int   g_sw = UI_BASE_W, g_sh = UI_BASE_H;
 static int   g_st[UI_STEPS];
@@ -134,10 +133,11 @@ void ui_init(HWND hwnd)
     dotc[UI_ST_ACTIVE]  = UI_AMBER;
     dotc[UI_ST_DONE]    = UI_GREEN;
     dotc[UI_ST_FAIL]    = UI_RED;
-    for (i = 0; i < 4; i++) {
+    for (i = 0; i < 4; i++)
+        /* 只建画刷，不再建画笔 —— 状态点改用 FillRect 方块画，理由见下面那个函数的说明。
+         * ⚠ 注释里别写「函数名紧跟左括号」：scripts/check_order.py 不剥注释，
+         *   会被误判成「函数用在定义之前」。 */
         g_br_dot[i] = CreateSolidBrush(dotc[i]);
-        g_pn_dot[i] = CreatePen(PS_SOLID, 2, dotc[i]);
-    }
 
     reset_labels();
 
@@ -150,7 +150,7 @@ int ui_ready(void) { return g_ready; }
 /* ══════════ 兜底画面：只用骨架验证过的 API ══════════
  * ⚠⚠ 这个函数里【只准用】下面这几个：
  *      FillRect / GetStockObject / SelectObject / SetBkMode / SetTextColor / DrawTextW
- *   绝不可以用 CreateFontIndirectW / CreatePen / Ellipse / Rectangle ——
+ *   绝不要用 CreateFontIndirectW，也不要用画笔/椭圆/矩形那几个调用 ——
  *   那几个是本程序新引入的，在你这台车机上【还没被验证过】。
  *   它存在的意义：哪怕新界面那些调用全都不行，
  *   用户也能看到这一屏，从而知道「程序起来了，是界面没画出来」——
@@ -193,10 +193,8 @@ void ui_free(void)
     if (g_br_bg)    DeleteObject(g_br_bg);
     if (g_br_panel) DeleteObject(g_br_panel);
     if (g_br_wash)  DeleteObject(g_br_wash);
-    for (i = 0; i < 4; i++) {
+    for (i = 0; i < 4; i++)
         if (g_br_dot[i]) DeleteObject(g_br_dot[i]);
-        if (g_pn_dot[i]) DeleteObject(g_pn_dot[i]);
-    }
     memset(&g_f_head, 0, sizeof(g_f_head));
 }
 
@@ -266,15 +264,28 @@ static void hr(HDC dc, int x1, int y, int x2, COLORREF c)
     DeleteObject(b);
 }
 
-/* ── 状态圆点：实心=已发生，空心=还没轮到 ── */
+/* ── 状态方块：实心=已发生，空心=还没轮到 ──
+ *
+ * ⚠ 刻意【不用 Ellipse + CreatePen + SelectObject(pen)】画圆点：
+ *   这几个 API 在本程序里从没在这台车机上验证过，而它们正是
+ *   「窗口闪一下就没了」最可疑的几处。
+ *   9x9 的尺寸上，方块和圆点肉眼几乎分不出 —— 用验证过的 FillRect 更划算。
+ *   空心那个用四条 1 像素细条拼出来（四边各一次 FillRect）。 */
 static void dot(HDC dc, int cx, int cy, int r, int state)
 {
-    HGDIOBJ ob, op;
-    ob = SelectObject(dc, g_br_dot[state]);
-    op = SelectObject(dc, g_pn_dot[state]);
-    Ellipse(dc, cx - r, cy - r, cx + r + 1, cy + r + 1);
-    SelectObject(dc, ob);
-    SelectObject(dc, op);
+    RECT q, e;
+
+    q.left = cx - r; q.right = cx + r + 1;
+    q.top  = cy - r; q.bottom = cy + r + 1;
+
+    if (state != UI_ST_PENDING) {
+        FillRect(dc, &q, g_br_dot[state]);
+        return;
+    }
+    e = q; e.bottom = e.top + 1;     FillRect(dc, &e, g_br_dot[state]);   /* 上 */
+    e = q; e.top    = e.bottom - 1;  FillRect(dc, &e, g_br_dot[state]);   /* 下 */
+    e = q; e.right  = e.left + 1;    FillRect(dc, &e, g_br_dot[state]);   /* 左 */
+    e = q; e.left   = e.right - 1;   FillRect(dc, &e, g_br_dot[state]);   /* 右 */
 }
 
 static void text(HDC dc, HFONT f, const WCHAR *s, RECT *r,
@@ -481,19 +492,18 @@ void ui_paint_statusbar(HDC dc, const RECT *rc)
     /* 右边三个按钮：扁平、一条细线框、没有圆角 */
     for (i = 0; i < 3; i++) {
         RECT b;
-        HGDIOBJ op;
         button_rect(ids[i], rc, &b);
         if (b.right <= b.left) continue;
-        /* 细线框 */
-        op = SelectObject(dc, GetStockObject(NULL_BRUSH));
+        /* 细线框：用四条 1 像素细条拼，不用 CreatePen + Rectangle */
         {
-            HPEN pn = CreatePen(PS_SOLID, 1, (ids[i] == UI_BTN_EXIT) ? UI_RULE : UI_RULE);
-            HGDIOBJ op2 = SelectObject(dc, pn);
-            Rectangle(dc, b.left, b.top, b.right, b.bottom);
-            SelectObject(dc, op2);
-            DeleteObject(pn);
+            HBRUSH fb = CreateSolidBrush(UI_RULE);
+            RECT e;
+            e = b; e.bottom = e.top + 1;    FillRect(dc, &e, fb);   /* 上 */
+            e = b; e.top    = e.bottom - 1; FillRect(dc, &e, fb);   /* 下 */
+            e = b; e.right  = e.left + 1;   FillRect(dc, &e, fb);   /* 左 */
+            e = b; e.left   = e.right - 1;  FillRect(dc, &e, fb);   /* 右 */
+            DeleteObject(fb);
         }
-        SelectObject(dc, op);
         text(dc, g_f_bar, g_btn[ids[i]], &b,
              (ids[i] == UI_BTN_EXIT) ? UI_MUTED : UI_TEXT,
              DT_CENTER | DT_VCENTER | DT_SINGLELINE);
