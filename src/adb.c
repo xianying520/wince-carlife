@@ -6,6 +6,23 @@
 #include <string.h>
 #include <stdlib.h>
 
+/* ── 握手追踪 ──
+ * 车机现场只有一次机会，所以「握手走到哪一步、在哪一步停的」必须能从
+ * 日志里读出来。这里只提供一个极简的钩子：一个固定短语 + 两个数字，
+ * 由上层（adbproxy → cl_log）负责格式化。
+ * 不装钩子时全是空操作，电脑上的主机测试行为一点不变。 */
+static void (*g_trace)(const char *what, unsigned int a, unsigned int b);
+
+void adb_set_trace(void (*fn)(const char *what, unsigned int a, unsigned int b))
+{
+    g_trace = fn;
+}
+
+static void tr(const char *what, unsigned int a, unsigned int b)
+{
+    if (g_trace) g_trace(what, a, b);
+}
+
 /* ── 小端打包 / 解包（ADB 全部小端，别和 CarLife 的大端搞混）── */
 static void put_le32(unsigned char *p, unsigned int v)
 {
@@ -288,17 +305,28 @@ int adb_connect(ADB *a, ADB_IO io)
 
     r = send_msg(a, ADB_CNXN, ADB_VERSION, ADB_MAXDATA_REQ,
                  (const unsigned char *)banner, (int)(sizeof(banner) - 1));
-    if (r < 0)
-        return -1;
+    if (r < 0) {
+        tr("CNXN 写设备失败", 0, 0);
+        return -5;
+    }
+    tr("已发 CNXN，等手机应答", 0, 0);
 
     for (;;) {
         r = recv_msg(a, &cmd, &a0, &a1, buf, (int)sizeof(buf), &len, 8000);
-        if (r <= 0) return r == -2 ? -2 : -1;
+        /* ⚠ 这里必须把「超时」和「读设备出错」分开报。
+         *   以前两者都返回 -1，现场屏幕上只会看到「认证失败（错误 -1）」，
+         *   完全分不清是「手机根本没理我们」还是「ADB 设备读不了」——
+         *   而这两种的处理办法完全不同。 */
+        if (r == 0) { tr("等手机应答超时", 0, 0);        return -4; }
+        if (r < 0)  { tr("读设备失败", (unsigned)(-r), 0); return -5; }
+
+        tr("收到包", cmd, (unsigned)len);
 
         if (cmd == ADB_CNXN) {
             /* 对端在自己 CNXN 的 arg0 里给出它接受的最大载荷，取小者 */
             if (a0 != 0 && a0 < a->maxdata)
                 a->maxdata = a0;
+            tr("握手完成 maxdata", a->maxdata, 0);
             return 0;
         }
 
@@ -307,18 +335,24 @@ int adb_connect(ADB *a, ADB_IO io)
                 return -2;                     /* 只认 20 字节的 token */
 
             tries++;
+            tr("收到 AUTH token，第几次", (unsigned)tries, (unsigned)len);
             if (tries == 1) {
                 /* 先试签名：手机已经记住我们这把钥匙时走这条，不会弹提示 */
                 unsigned char sig[256];
                 if (rsa_sign_sha1(ADB_KEY_N, ADB_KEY_D, buf, 20, sig) != 0)
                     return -2;
-                if (send_msg(a, ADB_AUTH, ADB_AUTH_SIGNATURE, 0, sig, 256) < 0)
-                    return -1;
+                if (send_msg(a, ADB_AUTH, ADB_AUTH_SIGNATURE, 0, sig, 256) < 0) {
+                    tr("签名写设备失败", 0, 0);
+                    return -5;
+                }
             } else if (tries <= 4) {
                 /* 手机不认识我们的钥匙：把公钥发过去。
                  * 手机会弹「允许 USB 调试吗」，用户点一次就好。 */
-                if (send_rsa_public_key(a) < 0)
-                    return -1;
+                tr("发公钥（手机该弹出「允许 USB 调试」）", 0, 0);
+                if (send_rsa_public_key(a) < 0) {
+                    tr("公钥写设备失败", 0, 0);
+                    return -5;
+                }
             } else {
                 return -3;                     /* 用户拒绝了，或手机一直不认 */
             }
