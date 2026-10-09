@@ -42,6 +42,16 @@ int  adbp_launch_phone_app(char *detail, int cap);
 /* 手机包名清单（诊断用，可能在手机上直接看出 CarLife 叫什么） */
 const char *adbp_phone_packages(void);
 
+/* 把 ADB 握手的每一步【同步显示到屏幕上】。
+ *
+ * 为什么必须有：握手过程原来只写日志，屏幕上一直停在「没认到手机」——
+ * 于是现场会出现最难解释的一幕：日志里明明握手成功了，
+ * 用户盯着屏幕却什么也没看到，只有把日志拷回来才知道「刚才连上过」。
+ * 装了这个回调，站车边上就能看见握手走到哪一步、
+ * 以及【现在该在手机上点「允许」】。
+ * 回调在会话线程里被调用，实现里更新界面变量即可。 */
+void adbp_set_trace_cb(void (*cb)(const char *what, unsigned int a, unsigned int b));
+
 /* 借已经建好的 ADB 通道，在手机上执行一条 shell 命令，把输出取回来。
  *
  * 为什么需要它：ADB 一旦通了，手机对我们就不是一个黑盒了 ——
