@@ -958,6 +958,41 @@ static void run_session(void)
         char detail[256];
         int  k;
 
+        /* ── 趁着 ADB 通了，【直接问手机】它现在是什么状态 ──────────────────
+         *
+         * 为什么要这一步：现场一直在争「USB 用途该选传输文件还是连接车辆」。
+         * 与其猜，不如问 —— ADB 一旦通，手机对我们就不再是黑盒了，
+         * getprop 能把它此刻的 USB 配置、机型、系统版本原样报出来。
+         * 这样「哪个选项能让车机认出手机」就从一个观点变成了一条数据。
+         *
+         * 这几个属性名是安卓一贯的，各家 ROM 都在：
+         *   sys.usb.config / sys.usb.state  → 当前 USB 功能组合，例如 "mtp,adb"
+         *   里面有没有 "adb" 才是关键 —— 有 adb 就说明 ADB 接口在，
+         *   而 ADB 接口在不在，和「传输文件 / 连接车辆」是两码事。 */
+        {
+            static const char *Q[] = {
+                "getprop sys.usb.config",
+                "getprop sys.usb.state",
+                "getprop persist.sys.usb.config",
+                "getprop ro.product.brand",
+                "getprop ro.product.model",
+                "getprop ro.build.version.release"
+            };
+            char got[160];
+            int  qi;
+
+            cl_log("── 手机自报家门（用 ADB shell 问出来的，不是猜的）──");
+            for (qi = 0; qi < (int)(sizeof(Q) / sizeof(Q[0])); qi++) {
+                got[0] = 0;
+                if (adbp_shell(Q[qi], got, (int)sizeof(got), 5000) == 0)
+                    cl_log("   %s = [%s]", Q[qi], got);
+                else
+                    cl_log("   %s = （问不出来）", Q[qi]);
+            }
+            cl_log("   提示: sys.usb.config 里只要含 adb，就说明 ADB 接口在；"
+                   "它和「传输文件 / 连接车辆」是两件事。");
+        }
+
         cl_log_stage(2, 8, "拉起手机端智能车载（ADB shell）");
         stage_set(1, UI_ST_ACTIVE, L"正在启动…");
         ui_headline(L"手机已连上，正在启动车载系统",
