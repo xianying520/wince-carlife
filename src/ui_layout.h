@@ -35,7 +35,12 @@
 #define UI_BASE_W    800
 #define UI_BASE_H    480
 
-#define UI_BAR_H     26      /* 顶栏 / 底栏高度 */
+#define UI_BAR_H     26      /* 底栏高度 */
+/* 顶栏要比底栏高：左上角现在是【两行】——
+ * 第一行品牌「XianyCar+互联」，第二行一句说明。
+ * 单行 26px 塞不下两行小字，所以顶栏单独给一个高度。
+ * 800x480 上：顶栏 40 + 内容 350 + 底栏 26 = 416，还剩 60 多像素余量。 */
+#define UI_TOP_H     40      /* 顶栏高度（两行） */
 #define UI_PAD       34      /* 左右留白 */
 
 #define UI_HEAD_H    30      /* 主标题字高 */
@@ -63,6 +68,8 @@
 #define UI_F_STEP    14
 #define UI_F_DETAIL  13
 #define UI_F_BAR     12
+#define UI_F_BRAND   15      /* 左上角品牌字 */
+#define UI_F_TAG     10      /* 品牌下面那句说明 */
 
 #define UI_STEPS     8       /* 阶段总数 */
 
