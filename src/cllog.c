@@ -63,12 +63,66 @@ static int g_write_failed = 0;   /* 写日志失败的次数 */
  *   而失败之后继续写只是白费力气。之前没检查 ——
  *   结果日志莫名其妙只留下前几行，完全看不出是盘的问题。
  *   现在失败次数会被记下来，由上层显示到屏幕上（屏幕还在，还来得及告诉用户）。 */
+/* 内部存储的候选（写 U 盘出问题时改写到这儿）。
+ * 顺序按「车机上确实存在且可写」排：iNAND 是车机主存储（BDCarlife 就装在它下面）。 */
+static const WCHAR *const g_fallback_dirs[] = {
+    L"\\iNAND", L"\\Residentflash2", L"\\SDMEM", L"\\"
+};
+static int g_switched = 0;      /* 是否已经切到内部存储过 */
+
+/* 写失败时切到内部存储继续写。
+ * ⚠ 这个坑是实打实踩到的：程序从 U 盘跑、又往 U 盘写日志，
+ *   老 WinCE 的 U 盘驱动在写入上很容易出问题 ——
+ *   现象正是「日志只写了前几行，然后窗口也不出现」。
+ *   切到内部存储之后，日志就能完整留下来。 */
+static int switch_to_internal(void)
+{
+    int i;
+    WCHAR path[MAX_PATH + 40];
+
+    if (g_switched) return 0;
+    g_switched = 1;
+
+    for (i = 0; i < (int)(sizeof(g_fallback_dirs) / sizeof(g_fallback_dirs[0])); i++) {
+        HANDLE h;
+        const WCHAR *dir = g_fallback_dirs[i];
+        if (!dir_writable(dir)) continue;
+        joinw(path, MAX_PATH + 40, dir, L"carlife-log.txt");
+        h = CreateFileW(path, GENERIC_WRITE, FILE_SHARE_READ, NULL,
+                        CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, NULL);
+        if (h == INVALID_HANDLE_VALUE) continue;
+
+        if (g_h != INVALID_HANDLE_VALUE) CloseHandle(g_h);
+        g_h = h;
+        w2a(dir, g_dirA, 260);
+        w2a(path, g_pathA, 300);
+        {
+            const unsigned char bom3[3] = { 0xEF, 0xBB, 0xBF };
+            DWORD bw = 0;
+            WriteFile(g_h, bom3, 3, &bw, NULL);
+        }
+        g_write_failed = 0;
+        cl_log("================================================");
+        cl_log(" 注意：U 盘写日志出问题了，日志已改写到车机内部存储：");
+        cl_log("   %s", g_pathA);
+        cl_log(" 这一份同样请带回来。");
+        cl_log("================================================");
+        return 1;
+    }
+    return 0;
+}
+
 static void write_bytes(const void *p, int n)
 {
     DWORD bw = 0;
     if (g_h == INVALID_HANDLE_VALUE || n <= 0) return;
-    if (!WriteFile(g_h, p, (DWORD)n, &bw, NULL) || bw != (DWORD)n)
+    if (!WriteFile(g_h, p, (DWORD)n, &bw, NULL) || bw != (DWORD)n) {
         g_write_failed++;
+        /* 连续写失败就换地方写 —— 别让日志就这么断在半截上。
+         * （只试一次，避免在只读介质上反复折腾。） */
+        if (g_write_failed == 3 && switch_to_internal())
+            write_bytes(p, n);
+    }
 }
 
 /* 日志写入失败过几次（0 = 一直正常）。非 0 说明盘写不进去了。 */
