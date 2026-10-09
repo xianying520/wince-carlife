@@ -56,11 +56,30 @@ static int dir_writable(const WCHAR *dir)
     return 1;
 }
 
+static int g_write_failed = 0;   /* 写日志失败的次数 */
+
+/* 写日志（不缓冲、立刻落盘）。
+ * ⚠ 返回值【必须】检查：U 盘写满、被拔掉、变成只读，WriteFile 都会失败，
+ *   而失败之后继续写只是白费力气。之前没检查 ——
+ *   结果日志莫名其妙只留下前几行，完全看不出是盘的问题。
+ *   现在失败次数会被记下来，由上层显示到屏幕上（屏幕还在，还来得及告诉用户）。 */
 static void write_bytes(const void *p, int n)
 {
     DWORD bw = 0;
     if (g_h == INVALID_HANDLE_VALUE || n <= 0) return;
-    WriteFile(g_h, p, (DWORD)n, &bw, NULL);      /* 不缓冲，立刻落盘 */
+    if (!WriteFile(g_h, p, (DWORD)n, &bw, NULL) || bw != (DWORD)n)
+        g_write_failed++;
+}
+
+/* 日志写入失败过几次（0 = 一直正常）。非 0 说明盘写不进去了。 */
+int cl_log_write_failed(void) { return g_write_failed; }
+
+/* 强制刷盘。关键几行写完后调一次：程序要是崩了，
+ * 停在系统缓存里的内容会全部丢掉 —— 而那正好是最关键的那几行。 */
+void cl_log_sync(void)
+{
+    if (g_h != INVALID_HANDLE_VALUE)
+        FlushFileBuffers(g_h);
 }
 
 void cl_log(const char *fmt, ...)
@@ -195,7 +214,6 @@ int cl_log_open(void)
     WCHAR mod[MAX_PATH];
     WCHAR exedir[MAX_PATH];
     WCHAR path[MAX_PATH + 40];
-    WCHAR bom[1];
     int i, n;
 
     g_t0 = GetTickCount();
@@ -232,9 +250,16 @@ int cl_log_open(void)
         w2a(dir, g_dirA, 260);
         w2a(path, g_pathA, 300);
 
-        /* UTF-8 BOM，记事本打开中文不乱码 */
-        bom[0] = 0xFEFF;
-        write_bytes(bom, 2);
+        /* ⚠ BOM 必须是 UTF-8 的 EF BB BF（3 个字节）。
+         *   之前写的是 WCHAR 0xFEFF，落盘成了 FF FE —— 那是【UTF-16LE】的 BOM。
+         *   于是所有编辑器都把这个文件当 UTF-16 读，把正常的 UTF-8 字节
+         *   两两配对成了汉字乱码。
+         *   实锤：车机生成的日志打开就是「せ〮㠸⁝㴽㴽…」，
+         *   解出来其实是「[0.88] ====…」。 */
+        {
+            const unsigned char bom3[3] = { 0xEF, 0xBB, 0xBF };
+            write_bytes(bom3, 3);
+        }
 
         cl_log("================================================");
         cl_log(" CarLife 车机端 · 运行日志");
