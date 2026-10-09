@@ -735,6 +735,39 @@ static DWORD WINAPI session_thread(LPVOID param)
 {
     (void)param;
 
+    /* ⚠⚠ 日志在这里打开，【绝不在主线程打开】—— 见 WinMain 里的说明。
+     *   往 U 盘写日志会把 WriteFile 卡死，一旦它跑在主线程上，
+     *   整个程序就再也画不出窗口（实锤：窗口建了却一次都没画过）。
+     *   放在这个线程里，它卡住也只是连接跑不起来，屏幕照样是活的。 */
+    if (cl_log_open() != 0)
+        set_status(L"日志文件建不出来，程序继续跑（但出问题就没日志可查）");
+
+    cl_log("──────── 启动自检 ────────");
+    cl_log("第1步 窗口已显示、界面已就绪（主线程，全程不碰文件）");
+    cl_log("第2步 日志已打开");
+    cl_log("   日志文件: %s", cl_log_path());
+    cl_log("   屏幕 %dx%d, 等手机 %d 秒",
+           GetSystemMetrics(SM_CXSCREEN), GetSystemMetrics(SM_CYSCREEN), WAIT_SECS);
+    cl_log_sync();
+
+    /* 把日志路径显示到屏幕上 —— 用户得知道去哪儿拿这个文件。
+     * 日志现在优先写车机内部存储（不再写 U 盘），所以这一行尤其重要。 */
+    {
+        WCHAR t[300], w[260];
+        int q;
+        const char *pp = cl_log_path();
+        for (q = 0; q < 250 && pp[q]; q++)
+            w[q] = (WCHAR)(unsigned char)pp[q];
+        w[q] = 0;
+        if (pp[0]) {
+            wsprintfW(t, L"日志：%s", w);
+            set_status(t);
+            Sleep(1200);              /* 让用户看清在哪儿 */
+        }
+    }
+
+    cl_log("──────── 自检结束，开始连接 ────────");
+
     for (;;) {
         run_session();
         if (g_quit)
@@ -1131,74 +1164,37 @@ int WINAPI WinMain(HINSTANCE hi, HINSTANCE hp, LPWSTR cmdline, int show)
     ShowWindow(g_hwnd, SW_SHOW);
     UpdateWindow(g_hwnd);
 
-    /* ══ 窗口已经在了。下面才开始碰文件 ══ */
+    /* ══ 主线程到此为止：下面只建界面、然后跑消息循环，【一律不碰文件】══
+     *
+     * ⚠⚠ 这是用两趟白跑换来的教训 ⚠⚠
+     *
+     * 原来 cl_log_open() 和那几行启动日志都跑在主线程上。车机上实测的结果是：
+     *   日志永远只留下 3 行（时间戳 81 / 88 / 94 毫秒），窗口一次都没画出来。
+     * 逐条排除后只剩一个解释：往 U 盘写日志时，第 4 次 WriteFile 卡死或崩掉了。
+     * 而它跑在主线程上 —— 于是消息循环【从来没跑起来】，
+     * 窗口虽然建出来了，却永远等不到一次 WM_PAINT，屏幕上一片空白。
+     *
+     * 所以现在：窗口和界面归主线程，【所有文件操作都搬进会话线程】。
+     * 那边再怎么卡，主线程照样活着、窗口照样会重画。
+     * 另：日志目录也改成车机内部存储优先，U 盘放到最后兜底。 */
 
-    if (cl_log_open() != 0) {
-        MessageBoxW(0,
-            L"日志文件建不出来（U 盘可能写保护或已满）。\n"
-            L"程序会继续运行，但万一连不上就没法查原因了。",
-            L"CarLife 车机端", MB_OK | MB_ICONWARNING);
-    }
-
-    cl_log("──────── 启动自检 ────────");
-    cl_log("第1步 窗口已显示 hwnd=0x%X 屏幕 %dx%d（这一步在最前面，不依赖任何文件）",
-           (unsigned)g_hwnd, rc.right, rc.bottom);
-    cl_log_sync();
-
-    g_rxcap = RX_CAP;
-    g_rx = (unsigned char *)malloc(g_rxcap);
-    cl_log("第2步 收帧缓冲 %d KB: %s", RX_CAP / 1024, g_rx ? "OK" : "失败(内存不足)");
-    if (!g_rx) {
-        cl_log_sync();
-        MessageBoxW(0, L"内存不够，收帧缓冲分配失败。", L"CarLife 车机端", MB_OK | MB_ICONERROR);
-        return 1;
-    }
-
-    /* 界面资源（字体、画刷都在这个函数里建）*/
+    /* 界面资源（字体、画刷都在这个函数里建）—— 纯内存，不碰文件 */
     ui_init(g_hwnd);
     sync_button_labels();
     ui_headline(L"用 USB 线把手机连到车机",
                 L"然后在手机上打开「USB 调试」并点「允许」");
-    stage_set(0, UI_ST_ACTIVE, L"正在等待…");
-    cl_log("第3步 界面字体/画刷 OK");
+    stage_set(0, UI_ST_ACTIVE, L"正在准备…");
+    UpdateWindow(g_hwnd);            /* 让进度板立刻真的画一次 */
 
-    /* ── 环境信息：排查第一眼要看的几项 ── */
-    cl_log("第4步 环境: 屏幕 %dx%d, 等手机 %d 秒", rc.right, rc.bottom, WAIT_SECS);
-    cl_log("日志文件: %s", cl_log_path());
-    cl_log("──────── 启动自检结束，下面开始连接 ────────");
-    cl_log_sync();
-
-    /* 日志写不进去的话，必须当面说 —— 不然日志只留半截，谁也查不出来 */
-    if (cl_log_write_failed()) {
-        MessageBoxW(0,
-            L"日志写不进 U 盘了（已满 / 写保护 / 被拔掉）。\n"
-            L"程序会继续运行，但出错时的线索会不完整。",
-            L"CarLife 车机端", MB_OK | MB_ICONWARNING);
+    /* 收帧缓冲也是纯内存 */
+    g_rxcap = RX_CAP;
+    g_rx = (unsigned char *)malloc(g_rxcap);
+    if (!g_rx) {
+        MessageBoxW(0, L"内存不够，收帧缓冲分配失败。",
+                    L"CarLife 车机端", MB_OK | MB_ICONERROR);
+        return 1;
     }
-    cl_log("");
 
-    /* 把日志路径在屏幕上亮几秒 —— 用户得知道去哪儿拿这个文件 */
-    {
-        WCHAR t[300], w[260];
-        int q;
-        const char *pp = cl_log_path();
-        for (q = 0; q < 250 && pp[q]; q++) w[q] = (WCHAR)(unsigned char)pp[q];
-        w[q] = 0;
-        if (pp[0]) {
-            wsprintfW(t, L"日志文件：%s", w);
-            set_status(t);
-            {
-                int w8;
-                for (w8 = 0; w8 < 30 && !g_quit; w8++) {
-                    MSG m2;
-                    while (PeekMessageW(&m2, 0, 0, 0, PM_REMOVE)) {
-                        TranslateMessage(&m2); DispatchMessageW(&m2);
-                    }
-                    Sleep(100);
-                }
-            }
-        }
-    }
 
     if (WSAStartup(MAKEWORD(2, 2), &wsa) != 0) {
         set_status(L"WSAStartup 失败：车机没有 ws2 网络栈");
