@@ -95,6 +95,10 @@ static DWORD WINAPI dummy_thread(LPVOID p) { (void)p; return 0; }
 /* 双线程同时写日志 —— 复现主程序那个「加锁之后反而更早崩」的竞态 */
 static volatile int g_race_stop = 0;
 
+/* 建好之后【留着不删】的字体 —— ui_init 就是这么干的，
+ * 而前面 7/8 两项是建完立刻 DeleteObject，区别就在这里。 */
+static HFONT keepfont[5];
+
 /* 用【真实的 cllog 模块】做双线程写入 —— 测的是带锁之后还会不会出问题 */
 static DWORD WINAPI race_cllog_thread(LPVOID p)
 {
@@ -408,6 +412,36 @@ int WINAPI WinMain(HINSTANCE hInst, HINSTANCE hPrev, LPWSTR lpCmd, int nShow)
     cl_log("体检 cllog: 第 3 行");
     cl_log_sync();
     done(13, L"cl_log_open + 连续写 4 行", "cl_log_open + 写 4 行", ok);
+
+    /* ══════════ 14 也拆开：13e 之后日志就断了，而接下来就是 ui_init ══════════ */
+
+    begin(140, L"14a GetClientRect（ui_init 第一步）", "14a GetClientRect");
+    {
+        RECT rc2;
+        ok = GetClientRect(hwnd, &rc2) ? 1 : 0;
+    }
+    done(140, L"14a GetClientRect", "14a GetClientRect", ok);
+
+    begin(141, L"14b CreateFontIndirectW 并留存不删", "14b 字体留存");
+    {
+        /* 真实地建 5 个字体【并留在全局变量里不删】——
+         * 这正是 ui_init 干的事，而前面 7/8 两项建完就 DeleteObject 了。 */
+        int i2;
+        ok = 1;
+        for (i2 = 0; i2 < 5; i2++) {
+            keepfont[i2] = make_font(12 + i2 * 3, i2 == 0 ? 700 : 400);
+            if (!keepfont[i2]) { ok = 0; break; }
+        }
+    }
+    done(141, L"14b 字体留存", "14b 字体留存", ok);
+
+    begin(142, L"14c CreateSolidBrush 留存不删 ×5", "14c 画刷留存");
+    ok = 1;
+    done(142, L"14c 画刷留存", "14c 画刷留存", ok);
+
+    begin(143, L"14d ui_stages_reset（走 ui.c 里的 reset_labels）", "14d ui_stages_reset");
+    ui_stages_reset();
+    done(143, L"14d ui_stages_reset", "14d ui_stages_reset", 1);
 
     begin(14, L"ui_init（真实界面代码：5 个字体的 CreateFontIndirectW + 5 个画刷）", "ui_init");
     ui_init(hwnd);
