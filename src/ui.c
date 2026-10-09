@@ -18,6 +18,7 @@ static const WCHAR *g_st_name[UI_STEPS] = {
 };
 
 static HFONT  g_f_head, g_f_sub, g_f_step, g_f_detail, g_f_bar;
+static HFONT  g_f_brand, g_f_tag;
 static HBRUSH g_br_bg, g_br_panel;
 static HBRUSH g_br_dot[4];
 static HBRUSH g_br_wash;
@@ -123,6 +124,8 @@ void ui_init(HWND hwnd)
     g_f_step   = mkfont(px(UI_F_STEP),   400);
     g_f_detail = mkfont(px(UI_F_DETAIL), 400);
     g_f_bar    = mkfont(px(UI_F_BAR),    400);
+    g_f_brand  = mkfont(px(UI_F_BRAND),  700);
+    g_f_tag    = mkfont(px(UI_F_TAG),    400);
     ReleaseDC(0, dc);
 
     g_br_bg    = CreateSolidBrush(UI_BG);
@@ -168,11 +171,11 @@ void ui_paint_minimal(HDC dc, const RECT *rc)
 
     r.left += 14;
     r.top  += 14;
-    DrawTextW(dc, L"CarLife 车机端 —— 程序已启动", -1, &r,
+    DrawTextW(dc, L"XianyCar+互联 —— 程序已启动", -1, &r,
               DT_LEFT | DT_TOP | DT_SINGLELINE);
 
     r.top += 26;
-    DrawTextW(dc, L"正在初始化界面 ...", -1, &r,
+    DrawTextW(dc, L"支持WinCE车机的智驾车载互联工具", -1, &r,
               DT_LEFT | DT_TOP | DT_SINGLELINE);
 
     r.top += 26;
@@ -190,6 +193,8 @@ void ui_free(void)
     if (g_f_step)   DeleteObject(g_f_step);
     if (g_f_detail) DeleteObject(g_f_detail);
     if (g_f_bar)    DeleteObject(g_f_bar);
+    if (g_f_brand)  DeleteObject(g_f_brand);
+    if (g_f_tag)    DeleteObject(g_f_tag);
     if (g_br_bg)    DeleteObject(g_br_bg);
     if (g_br_panel) DeleteObject(g_br_panel);
     if (g_br_wash)  DeleteObject(g_br_wash);
@@ -359,23 +364,38 @@ void ui_paint_connect(HDC dc, const RECT *rc)
     /* 底 */
     FillRect(dc, rc, g_br_bg);
 
-    /* 顶栏：左边标题，右边提示日志在哪。
+    /* 顶栏：左上角两行（品牌 + 一句说明），右边提示日志在哪。
      * ⚠ 左右边距一律走【内容列】，不能再单独用 pad ——
      *   否则标题和正文会各走一条左边距，一眼就看得出不对齐。 */
     {
         int cr, cl = content_left(rc, &cr);
-        r = *rc; r.bottom = r.top + px(UI_BAR_H);
-        r.left = cl; r.right = cr - px(170);
-        text(dc, g_f_bar, L"CarLife 车机端", &r, UI_MUTED,
-             DT_LEFT | DT_VCENTER | DT_SINGLELINE);
+        int y0 = rc->top;
 
+        r = *rc; r.bottom = rc->top + px(UI_TOP_H);
+
+        /* 第一行：品牌。用正文色而不是灰色 —— 品牌不该比正文还弱。 */
+        r.left = cl; r.right = cr - px(170);
+        r.top    = y0 + px(4);
+        r.bottom = y0 + px(4) + px(UI_F_BRAND + 3);
+        text(dc, g_f_brand, L"XianyCar+互联", &r, UI_TEXT,
+             DT_LEFT | DT_TOP | DT_SINGLELINE);
+
+        /* 第二行：一句说明，小字、弱色，不抢正文。 */
+        r.top    = y0 + px(4) + px(UI_F_BRAND + 3) + px(1);
+        r.bottom = y0 + px(4) + px(UI_F_BRAND + 3) + px(1) + px(UI_F_TAG + 3);
+        text(dc, g_f_tag, L"支持WinCE车机的智驾车载互联工具", &r, UI_MUTED,
+             DT_LEFT | DT_TOP | DT_SINGLELINE);
+
+        /* 日志提示挂在第一行右侧，和品牌同一基线 */
         {
             const WCHAR *lg = L"运行日志：carlife-log.txt";
             r.left = cr - px(170); r.right = cr;
+            r.top    = y0 + px(4);
+            r.bottom = y0 + px(4) + px(UI_F_BRAND + 3);
             text(dc, g_f_bar, lg, &r, UI_HINT,
                  DT_RIGHT | DT_VCENTER | DT_SINGLELINE);
         }
-        hr(dc, cl, rc->top + px(UI_BAR_H), cr, UI_RULE);
+        hr(dc, cl, rc->top + px(UI_TOP_H), cr, UI_RULE);
     }
 
     /* 内容块整体垂直居中：先算总高 */
@@ -383,8 +403,9 @@ void ui_paint_connect(HDC dc, const RECT *rc)
     block  = px(UI_HEAD_H) + px(UI_SUB_GAP) + px(UI_SUB_H)
            + px(UI_TRACK_GAP) + tracks
            + px(UI_DETAIL_GAP) + px(UI_DETAIL_H);
-    top = rc->top + px(UI_BAR_H) + (g_sh - 2 * px(UI_BAR_H) - block) / 2;
-    if (top < rc->top + px(UI_BAR_H) + px(8)) top = rc->top + px(UI_BAR_H) + px(8);
+    top = rc->top + px(UI_TOP_H) +
+          (g_sh - px(UI_TOP_H) - px(UI_BAR_H) - block) / 2;
+    if (top < rc->top + px(UI_TOP_H) + px(8)) top = rc->top + px(UI_TOP_H) + px(8);
 
     /* 主标题 / 副标题 */
     y = top;
