@@ -466,6 +466,38 @@ const char *adbp_phone_packages(void)
     return g_pkgs;
 }
 
+/* 借已建立的 ADB 通道在手机上跑一条 shell 命令。
+ * ⚠ 一定要加锁：转发线程和会话线程共用同一个 g_adb，通道表是按槽位下标算的，
+ *   两边同时动会把通道分配搞坏（见文件开头那段说明）。 */
+int adbp_shell(const char *cmd, char *out, int cap, int timeout_ms)
+{
+    char tmp[1024];
+    int  r, i, o = 0;
+
+    if (!cmd || !out || cap <= 0) return -1;
+    out[0] = 0;
+    tmp[0] = 0;
+
+    adbp_lock_init();
+    ADBP_LOCK();
+    r = adb_run_shell(&g_adb, cmd, tmp, (int)sizeof(tmp) - 1, timeout_ms);
+    ADBP_UNLOCK();
+    if (r != 0) return r;
+
+    /* 去掉行尾的 \r \n 和多余空白 —— 输出要当普通一行日志用，
+     * 夹带换行会把日志的时间戳列冲乱。 */
+    for (i = 0; tmp[i] && o < cap - 1; i++) {
+        char c = tmp[i];
+        if (c == '\r' || c == '\n' || c == '\t') c = ' ';
+        out[o++] = c;
+    }
+    out[o] = 0;
+
+    /* 顺手把尾部空格修掉 */
+    while (o > 0 && out[o - 1] == ' ') out[--o] = 0;
+    return 0;
+}
+
 const char *adbp_last_note(void)
 {
     return g_note;
