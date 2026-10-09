@@ -10,6 +10,7 @@
  */
 #include <windows.h>
 #include <winsock2.h>
+#include <string.h>
 
 #include "carlife.h"
 #include "display.h"
@@ -28,6 +29,58 @@
 static void cl_log_line(const char *line)
 {
     cl_log("%s", line ? line : "");
+}
+
+/* UTF-8 → UTF-16（WinCE 的宽字符就是 UTF-16）。
+ *
+ * ⚠⚠ 这个函数原来写的是「一个字节换一个宽字符」，也就是它根本不认识 UTF-8。
+ *   而本项目所有从日志/RSA/协议层来的字符串【全是 UTF-8】——
+ *   于是一个 3 字节的汉字被拆成了 3 个互不相干的宽字符。
+ *   现场看到的正是这个：
+ *     「打不开任何 ADB 设备，试过：ADB1:(错误55) …」
+ *   在屏幕上一整行全是看不懂的怪字符，那一串设备名等于白记了。
+ *
+ *   现在按标准 UTF-8 逐字节解码：
+ *     0xxxxxxx                              1 字节
+ *     110xxxxx 10xxxxxx                     2 字节
+ *     1110xxxx 10xxxxxx 10xxxxxx            3 字节（汉字都走这条）
+ *     11110xxx 10xxxxxx 10xxxxxx 10xxxxxx   4 字节（转成 UTF-16 代理对）
+ *   解不出来的字节换成 '?' —— 宁可少一个字，也不要整行花掉。 */
+static void a2w_ui(const char *a, WCHAR *w, int cap)
+{
+    int i = 0, o = 0;
+
+    if (!a || !w || cap <= 0) return;
+
+    while (a[i] && o < cap - 1) {
+        unsigned char c = (unsigned char)a[i];
+        unsigned int  cp;
+        int           need, k;
+
+        if (c < 0x80)                { cp = c;        need = 0; }
+        else if ((c & 0xE0) == 0xC0) { cp = c & 0x1Fu; need = 1; }
+        else if ((c & 0xF0) == 0xE0) { cp = c & 0x0Fu; need = 2; }
+        else if ((c & 0xF8) == 0xF0) { cp = c & 0x07u; need = 3; }
+        else                         { w[o++] = L'?'; i++; continue; }
+
+        for (k = 1; k <= need; k++) {
+            unsigned char d = (unsigned char)a[i + k];
+            if ((d & 0xC0) != 0x80) break;
+            cp = (cp << 6) | (unsigned int)(d & 0x3Fu);
+        }
+        if (k <= need) { w[o++] = L'?'; i++; continue; }
+        i += need + 1;
+
+        if (cp >= 0x10000u) {
+            if (o + 2 > cap - 1) break;
+            cp -= 0x10000u;
+            w[o++] = (WCHAR)(0xD800u + (cp >> 10));
+            w[o++] = (WCHAR)(0xDC00u + (cp & 0x3FFu));
+        } else {
+            w[o++] = (WCHAR)cp;
+        }
+    }
+    w[o] = 0;
 }
 
 /* 底部栏的高度、按钮宽度都已归 ui.c 统一管理（见 ui_layout.h）。
@@ -129,15 +182,54 @@ static int              g_adb_ok     = 0;
 static char             g_adb_reason[256] = "";
 
 /* ── 状态栏 ── */
-/* 宽字符 → ANSI，只为了写日志（日志文件是 UTF-8 的 ASCII 子集部分＋中文）。
- * 手写而不用 WideCharToMultiByte：本工具链的 coredll 上那些转换函数不一定有。 */
+/* UTF-16 → UTF-8。
+ *
+ * ⚠⚠ 原来这里是「非 ASCII 一律换成 '?'」，于是日志里【所有】
+ *   `屏幕 | …` 那一行的中文全都变成了问号：
+ *       [5.258] 屏幕 | ??????? 4 ?????????????????? ADB ?????????????
+ *   而这一行恰恰是「屏幕上当时到底显示了什么」的唯一记录 ——
+ *   用户拍屏幕 + 带日志两条线索本来是要互相印证的，
+ *   中文一没，这条路就断了。
+ *
+ *   日志文件本身是 UTF-8（cl_log 直接写字节，文件头带 BOM），
+ *   所以这里必须产出真正的 UTF-8，而不是 ASCII 剔除版。 */
 static void w2a_log(const WCHAR *w, char *a, int cap)
 {
-    int i;
-    if (cap <= 0) return;
-    for (i = 0; i < cap - 1 && w[i]; i++)
-        a[i] = (char)(w[i] < 128 ? w[i] : '?');
-    a[i] = 0;
+    int i = 0, o = 0;
+
+    if (!w || !a || cap <= 0) return;
+
+    while (w[i] && o < cap - 1) {
+        unsigned int cp = (unsigned int)w[i++];
+
+        /* 代理对：先高后低，拼回码点 */
+        if (cp >= 0xD800u && cp <= 0xDBFFu &&
+            w[i] >= 0xDC00u && w[i] <= 0xDFFFu) {
+            cp = 0x10000u + ((cp - 0xD800u) << 10)
+                          + ((unsigned int)w[i] - 0xDC00u);
+            i++;
+        }
+
+        if (cp < 0x80u) {
+            a[o++] = (char)cp;
+        } else if (cp < 0x800u) {
+            if (o + 2 > cap - 1) break;
+            a[o++] = (char)(0xC0u | (cp >> 6));
+            a[o++] = (char)(0x80u | (cp & 0x3Fu));
+        } else if (cp < 0x10000u) {
+            if (o + 3 > cap - 1) break;
+            a[o++] = (char)(0xE0u | (cp >> 12));
+            a[o++] = (char)(0x80u | ((cp >> 6) & 0x3Fu));
+            a[o++] = (char)(0x80u | (cp & 0x3Fu));
+        } else {
+            if (o + 4 > cap - 1) break;
+            a[o++] = (char)(0xF0u | (cp >> 18));
+            a[o++] = (char)(0x80u | ((cp >> 12) & 0x3Fu));
+            a[o++] = (char)(0x80u | ((cp >> 6) & 0x3Fu));
+            a[o++] = (char)(0x80u | (cp & 0x3Fu));
+        }
+    }
+    a[o] = 0;
 }
 
 static void set_status(const WCHAR *s)
@@ -155,6 +247,41 @@ static void set_status(const WCHAR *s)
     w2a_log(s, a, (int)sizeof(a));
     cl_log("屏幕 | %s", a);
 }
+
+/* ── ADB 握手过程 → 屏幕 ────────────────────────────────────────────────
+ *
+ * 这是现场反馈回来的一个真问题：**握手明明成功了，屏幕上却一直停在
+ * 「没认到手机」** —— 用户只有把日志拷回来才知道「刚才其实连上过」。
+ * 原因是握手过程只写了日志，没有一处去更新界面。
+ *
+ * 现在每一步都往屏幕上说一句，站在车边上就能看明白走到哪了；
+ * 尤其是「发公钥」那一步 —— 手机马上要弹「允许 USB 调试」，
+ * 这一句必须让人看见，否则用户根本不知道该看手机。
+ *
+ * ⚠ 用 strstr 做子串匹配，不用 strcmp：本工具链的 coredll 里没有 strcmp，
+ *   strstr 是有的（而且这些标记串本来就是我们自己写的中文，匹配很稳）。 */
+static void adb_progress(const char *what, unsigned int a, unsigned int b)
+{
+    (void)a; (void)b;
+    if (!what) return;
+
+    if (strstr(what, "发公钥")) {
+        ui_headline(L"手机已经应答，正在认证",
+                    L"⚠ 请看手机屏幕，点「允许 USB 调试」");
+        set_status(L"⚠ 现在请看手机：会弹出「允许 USB 调试」，"
+                   L"勾上「一律允许」再点「允许」");
+    } else if (strstr(what, "握手完成")) {
+        ui_headline(L"已认到手机", L"正在建立数据通道 …");
+        set_status(L"✅ 已认到手机（ADB 握手成功），正在建数据通道 …");
+    } else if (strstr(what, "收到 AUTH")) {
+        set_status(L"手机已应答，正在做 ADB 认证 …");
+    } else if (strstr(what, "已发 CNXN")) {
+        set_status(L"已认到 USB 设备，正在和手机握手 …");
+    } else if (strstr(what, "超时") || strstr(what, "失败")) {
+        set_status(L"握手中断，稍后自动重试（细节见日志）");
+    }
+}
+
 
 /* ── 把一帧画出来 ── */
 static void dump_unknown_frame(const unsigned char *buf, int len)
@@ -260,10 +387,7 @@ static int show_h264(const unsigned char *buf, int len)
             WCHAR t2[260];
             WCHAR wl[200];
             const char *lg = h264dec_log(g_h264);
-            int q;
-            for (q = 0; q < 190 && lg[q]; q++)
-                wl[q] = (WCHAR)(unsigned char)lg[q];
-            wl[q] = 0;
+            a2w_ui(lg, wl, 200);        /* ⚠ 必须走 UTF-8 解码，别再逐字节强转 */
             wsprintfW(t2, L"H.264 解码出错：%s", wl);
             set_status(t2);
         }
@@ -449,14 +573,6 @@ static void load_preset(void)
 /* ── 窗口过程 ── */
 /* ANSI → WCHAR，只用于把日志/转发器里的说明搬到界面上。
  * 手写而不用 MultiByteToWideChar：本工具链的 coredll 上那些转换函数不一定有导出。 */
-static void a2w_ui(const char *a, WCHAR *w, int cap)
-{
-    int i;
-    if (cap <= 0) return;
-    for (i = 0; i < cap - 1 && a[i]; i++)
-        w[i] = (WCHAR)(unsigned char)a[i];
-    w[i] = 0;
-}
 
 /* 把当前状态同步到界面上按钮的文字。
  * 按钮的矩形和文字都由 ui.c 统一管理，这里只推状态 ——
@@ -741,11 +857,8 @@ static int open_transport(void)
 
         /* 等了几轮之后，把失败原因也显示出来，方便现场判断卡在哪一步 */
         if (tries >= 3 && g_adb_reason[0]) {
-            WCHAR w[260];
-            int k;
-            for (k = 0; k < 255 && g_adb_reason[k]; k++)
-                w[k] = (WCHAR)(unsigned char)g_adb_reason[k];
-            w[k] = 0;
+            WCHAR w[300];
+            a2w_ui(g_adb_reason, w, 300);   /* ⚠ UTF-8 → UTF-16，见 a2w_ui 的说明 */
             wsprintfW(t, L"等待手机中（已 %d 秒）…%s", WAITED_SEC, w);
             set_status(t);
         }
@@ -814,11 +927,8 @@ static DWORD WINAPI session_thread(LPVOID param)
      * 日志现在优先写车机内部存储（不再写 U 盘），所以这一行尤其重要。 */
     {
         WCHAR t[300], w[260];
-        int q;
         const char *pp = cl_log_path();
-        for (q = 0; q < 250 && pp[q]; q++)
-            w[q] = (WCHAR)(unsigned char)pp[q];
-        w[q] = 0;
+        a2w_ui(pp, w, 260);             /* ⚠ UTF-8 → UTF-16 */
         if (pp[0]) {
             wsprintfW(t, L"日志：%s", w);
             set_status(t);
@@ -845,6 +955,9 @@ static DWORD WINAPI session_thread(LPVOID param)
      *   万一主线程那几行日志丢了，这一行仍然能说明界面走到第几步。 */
     cl_log("启动前状态: 主线程界面进度 = %d/4", (int)g_boot_step);
     cl_log("──────── 自检结束，开始连接 ────────");
+
+    /* 把 ADB 握手的每一步接到屏幕上（见 adb_progress 的说明） */
+    adbp_set_trace_cb(adb_progress);
 
     for (;;) {
         run_session();
@@ -930,11 +1043,8 @@ static void run_session(void)
 
     if (open_transport() != 0) {
         WCHAR t[400];
-        WCHAR wreason[256];
-        int i;
-        for (i = 0; i < 255 && g_adb_reason[i]; i++)
-            wreason[i] = (WCHAR)(unsigned char)g_adb_reason[i];
-        wreason[i] = 0;
+        WCHAR wreason[300];
+        a2w_ui(g_adb_reason, wreason, 300);   /* ⚠ UTF-8 → UTF-16 */
         wsprintfW(t, L"两条路都不通。ADB: %s ／ USB网卡: 也没找到手机 "
                       L"（请确认已开 USB 调试或 USB 网络共享，且 Jovi InCar 已启动）",
                   wreason);
@@ -1028,11 +1138,8 @@ static void run_session(void)
                 stage_set(1, UI_ST_FAIL, w);
             }
             {
-                WCHAR t[420], w[280];
-                int n;
-                for (n = 0; n < 255 && detail[n]; n++)
-                    w[n] = (WCHAR)(unsigned char)detail[n];
-                w[n] = 0;
+                WCHAR t[420], w[300];
+                a2w_ui(detail, w, 300);       /* ⚠ UTF-8 → UTF-16 */
                 wsprintfW(t, (k < 2) ? L"正在启动手机端的智能车载…  %s"
                                      : L"手机端没能启动：%s", w);
                 set_status(t);
@@ -1312,7 +1419,7 @@ int WINAPI WinMain(HINSTANCE hi, HINSTANCE hp, LPWSTR cmdline, int show)
      *     · 主程序（WS_EX_TOPMOST）             → 闪一下就没了
      *   「置顶窗口」在有些车机外壳上会被当成异常窗口处理甚至直接关掉。
      *   实测优先于理论：改回 0。 */
-    g_hwnd = CreateWindowExW(0, L"CarLifeView", L"CarLife 车机端",
+    g_hwnd = CreateWindowExW(0, L"CarLifeView", L"XianyCar+互联",
                              WS_POPUP | WS_VISIBLE,
                              0, 0, rc.right, rc.bottom,
                              0, 0, hi, 0);
@@ -1321,7 +1428,7 @@ int WINAPI WinMain(HINSTANCE hi, HINSTANCE hp, LPWSTR cmdline, int show)
         MessageBoxW(0,
             L"窗口创建失败。\n"
             L"请把这句话拍下来发给开发者，这一条就够了。",
-            L"CarLife 车机端", MB_OK | MB_ICONERROR);
+            L"XianyCar+互联", MB_OK | MB_ICONERROR);
         return 1;
     }
 
@@ -1350,7 +1457,7 @@ int WINAPI WinMain(HINSTANCE hi, HINSTANCE hp, LPWSTR cmdline, int show)
     g_rx = (unsigned char *)malloc(g_rxcap);
     if (!g_rx) {
         MessageBoxW(0, L"内存不够，收帧缓冲分配失败。",
-                    L"CarLife 车机端", MB_OK | MB_ICONERROR);
+                    L"XianyCar+互联", MB_OK | MB_ICONERROR);
         return 1;
     }
 
