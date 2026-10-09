@@ -357,6 +357,50 @@ int WINAPI WinMain(HINSTANCE hInst, HINSTANCE hPrev, LPWSTR lpCmd, int nShow)
 
     /* ══════════ 下面这些才是【主程序真正在跑的代码】 ══════════ */
 
+    /* ══════════ 13 拆成细项：cl_log_open 里用到的函数，前面从没单独测过 ══════════
+     *   实测：体检程序跑到完整的 cl_log_open 就闪退，所以把它拆开逐项定位。 */
+
+    begin(130, L"13a GetTickCount", "13a GetTickCount");
+    { DWORD t1 = GetTickCount(); DWORD t2 = GetTickCount(); ok = (t2 >= t1); }
+    done(130, L"13a GetTickCount", "13a GetTickCount", ok);
+
+    begin(131, L"13b InitializeCriticalSection + Enter + Leave", "13b 临界区");
+    {
+        CRITICAL_SECTION cs;
+        InitializeCriticalSection(&cs);
+        EnterCriticalSection(&cs);
+        LeaveCriticalSection(&cs);
+        DeleteCriticalSection(&cs);
+        ok = 1;
+    }
+    done(131, L"13b InitializeCriticalSection + Enter + Leave", "13b 临界区", ok);
+
+    begin(132, L"13c GetModuleFileNameW", "13c GetModuleFileNameW");
+    {
+        WCHAR m[MAX_PATH];
+        DWORD r = GetModuleFileNameW(NULL, m, MAX_PATH);
+        ok = (r > 0 && r < MAX_PATH);
+    }
+    done(132, L"13c GetModuleFileNameW", "13c GetModuleFileNameW", ok);
+
+    begin(133, L"13d DeleteFileW（建个临时文件再删）", "13d DeleteFileW");
+    {
+        HANDLE h3 = CreateFileW(L"\\iNAND\\cltest.tmp", GENERIC_WRITE, 0, NULL,
+                                CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, NULL);
+        ok = (h3 != INVALID_HANDLE_VALUE);
+        if (ok) { CloseHandle(h3); ok = DeleteFileW(L"\\iNAND\\cltest.tmp") ? 1 : 0; }
+    }
+    done(133, L"13d DeleteFileW", "13d DeleteFileW", ok);
+
+    begin(134, L"13e 完整 cl_log_open（真实 cllog 模块）", "13e cl_log_open");
+    ok = (cl_log_open() == 0);
+    done(134, L"13e 完整 cl_log_open", "13e cl_log_open", ok);
+    cl_log("体检 cllog: 第 1 行");
+    cl_log("体检 cllog: 第 2 行 %d", 12345);
+    cl_log("体检 cllog: 第 3 行");
+    cl_log_sync();
+    done(134, L"13e cl_log_open + 写 3 行", "13e cl_log_open + 写 3 行", ok);
+
     begin(13, L"cl_log_open + 连续写 4 行（cllog 模块）", "cl_log_open + 写 4 行");
     ok = (cl_log_open() == 0);
     cl_log("体检 cllog: 第 1 行");
