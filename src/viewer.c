@@ -1076,29 +1076,24 @@ int WINAPI WinMain(HINSTANCE hi, HINSTANCE hp, LPWSTR cmdline, int show)
 
     (void)hp; (void)cmdline; (void)show;
 
-    /* ⚠ 日志要在最开头就打开 —— 后面任何一步出错都得记下来。
-     *   打不开也要继续跑（用户可能把程序放在只读目录），只是没日志而已。 */
-    if (cl_log_open() != 0) {
-        /* 一个地方都写不进去 —— 照样跑，但必须当面告诉用户，
-         * 因为出问题时就再没有别的线索了。 */
-        MessageBoxW(0,
-            L"日志文件建不出来（U 盘可能写保护或已满）。\n"
-            L"程序会继续运行，但万一连不上就没法查原因了。",
-            L"CarLife 车机端", MB_OK | MB_ICONWARNING);
-    }
-    cl_log("──────── 启动自检 ────────");
-    cl_log("第1步 日志文件已打开");
-    cl_log_sync();                       /* 先落盘，后面崩了这几行也还在 */
-
-    g_rxcap = RX_CAP;
-    g_rx = (unsigned char *)malloc(g_rxcap);
-    cl_log("第2步 收帧缓冲 %d KB: %s", RX_CAP / 1024, g_rx ? "OK" : "失败(内存不足)");
-    if (!g_rx) {
-        cl_log_sync();
-        MessageBoxW(0, L"内存不够，收帧缓冲分配失败。", L"CarLife 车机端", MB_OK | MB_ICONERROR);
-        return 1;
-    }
-
+    /* ══════════════════════════════════════════════════════════════════════
+     *  第一优先：【把窗口弄出来】。这一段绝不能碰任何文件。
+     *
+     *  ⚠⚠ 这是用一趟白跑换来的结论 ⚠⚠
+     *
+     *  车机上的实测：程序确实启动了（日志是它写的），但窗口一直没出现。
+     *  日志只留下 3 行 —— 时间戳 [0.088] [0.095] [0.101]，
+     *  而日志头一共 5 行，第 3 行和第 4 行之间【没有任何代码】。
+     *  逐条排除之后只剩一个解释：
+     *    第 4 次往 U 盘 WriteFile 时卡住或失败了
+     *    —— 程序从 U 盘运行、又往 U 盘写日志，老 WinCE 的 U 盘驱动在这里很容易出问题。
+     *
+     *  而当时的顺序是「先写日志 → 再建窗口」，于是写盘一出问题，
+     *  窗口的创建【永远轮不到】，用户看到的就是「点了完全没反应」。
+     *
+     *  现在把顺序倒过来：窗口先出来，之后再碰盘。
+     *  盘再怎么出问题，屏幕上至少已经有东西 —— 用户能看见、能判断、能拍给我。
+     * ══════════════════════════════════════════════════════════════════════ */
     memset(&g_disp, 0, sizeof(g_disp));
 
     wc.style         = CS_HREDRAW | CS_VREDRAW;
@@ -1111,42 +1106,53 @@ int WINAPI WinMain(HINSTANCE hi, HINSTANCE hp, LPWSTR cmdline, int show)
     wc.hbrBackground = (HBRUSH)GetStockObject(BLACK_BRUSH);
     wc.lpszMenuName  = 0;
     wc.lpszClassName = L"CarLifeView";
-    if (!RegisterClassW(&wc))
-        cl_log("第3步 注册窗口类失败（错误 %lu）—— 可能已经有实例在跑",
-               (unsigned long)GetLastError());
-    else
-        cl_log("第3步 窗口类注册 OK");
+    RegisterClassW(&wc);
 
     rc.left = 0; rc.top = 0;
     rc.right = GetSystemMetrics(SM_CXSCREEN);
     rc.bottom = GetSystemMetrics(SM_CYSCREEN);
 
-    /* ⚠ WS_EX_TOPMOST：不加的话，窗口有可能被车机的桌面/启动器盖住 ——
-     *   表现就是「点了没反应、也不显示」，而程序其实跑得好好的。
-     *   用 0x8 这个裸值而不写 WS_EX_TOPMOST，是为了不依赖头文件里有没有定义。 */
+    /* ⚠ WS_EX_TOPMOST（裸值 0x8，不依赖头文件里有没有定义）：
+     *   不加的话窗口有可能被车机的桌面/启动器盖住 ——
+     *   表现同样是「点了没反应、也不显示」，而程序其实跑得好好的。 */
     g_hwnd = CreateWindowExW(0x00000008L, L"CarLifeView", L"CarLife 车机端",
                              WS_POPUP | WS_VISIBLE,
                              0, 0, rc.right, rc.bottom,
                              0, 0, hi, 0);
-    cl_log("第4步 建窗口: %s (hwnd=0x%X, 屏幕 %dx%d)",
-           g_hwnd ? "OK" : "失败", (unsigned)g_hwnd, rc.right, rc.bottom);
     if (!g_hwnd) {
-        cl_log_sync();
+        /* 窗口都建不出来，日志多半也指望不上，直接弹窗 —— 这是唯一还能用的通道 */
         MessageBoxW(0,
-            L"窗口创建失败。\n这一条信息本身就够定位了 —— 请把它拍下来。",
+            L"窗口创建失败。\n"
+            L"请把这句话拍下来发给开发者，这一条就够了。",
             L"CarLife 车机端", MB_OK | MB_ICONERROR);
         return 1;
     }
 
-    /* ⚠ 顺序很重要：【先把窗口显示出来，再建界面资源】。
-     *   反过来的话，万一字体/画刷建失败，用户看到的就是「点了没反应」——
-     *   一个黑窗口都没有，什么都判断不出来。
-     *   现在就算后面全崩，用户至少能看到一个窗口，
-     *   从而知道「程序起来了，是界面某一步的问题」。 */
     ShowWindow(g_hwnd, SW_SHOW);
     UpdateWindow(g_hwnd);
-    cl_log("第5步 窗口已显示（此时屏幕上应该能看到东西了）");
+
+    /* ══ 窗口已经在了。下面才开始碰文件 ══ */
+
+    if (cl_log_open() != 0) {
+        MessageBoxW(0,
+            L"日志文件建不出来（U 盘可能写保护或已满）。\n"
+            L"程序会继续运行，但万一连不上就没法查原因了。",
+            L"CarLife 车机端", MB_OK | MB_ICONWARNING);
+    }
+
+    cl_log("──────── 启动自检 ────────");
+    cl_log("第1步 窗口已显示 hwnd=0x%X 屏幕 %dx%d（这一步在最前面，不依赖任何文件）",
+           (unsigned)g_hwnd, rc.right, rc.bottom);
     cl_log_sync();
+
+    g_rxcap = RX_CAP;
+    g_rx = (unsigned char *)malloc(g_rxcap);
+    cl_log("第2步 收帧缓冲 %d KB: %s", RX_CAP / 1024, g_rx ? "OK" : "失败(内存不足)");
+    if (!g_rx) {
+        cl_log_sync();
+        MessageBoxW(0, L"内存不够，收帧缓冲分配失败。", L"CarLife 车机端", MB_OK | MB_ICONERROR);
+        return 1;
+    }
 
     /* 界面资源（字体、画刷都在这个函数里建）*/
     ui_init(g_hwnd);
@@ -1154,10 +1160,10 @@ int WINAPI WinMain(HINSTANCE hi, HINSTANCE hp, LPWSTR cmdline, int show)
     ui_headline(L"用 USB 线把手机连到车机",
                 L"然后在手机上打开「USB 调试」并点「允许」");
     stage_set(0, UI_ST_ACTIVE, L"正在等待…");
-    cl_log("第6步 界面字体/画刷 OK");
+    cl_log("第3步 界面字体/画刷 OK");
 
     /* ── 环境信息：排查第一眼要看的几项 ── */
-    cl_log("第7步 环境: 屏幕 %dx%d, 等手机 %d 秒", rc.right, rc.bottom, WAIT_SECS);
+    cl_log("第4步 环境: 屏幕 %dx%d, 等手机 %d 秒", rc.right, rc.bottom, WAIT_SECS);
     cl_log("日志文件: %s", cl_log_path());
     cl_log("──────── 启动自检结束，下面开始连接 ────────");
     cl_log_sync();
