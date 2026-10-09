@@ -79,6 +79,10 @@ static int      g_miss = 0;                /* 连续收到非 JPEG/解码失败�
 static int      g_h_toobig   = 0;   /* 分辨率超出车机承受能力，已经报过了 */
 static int      g_trunc_warn = 0;   /* 视频帧被收帧缓冲截断，已经报过了 */
 
+/* 会话线程把日志打开好了没有 —— 主线程靠它决定能不能往日志里写。
+ * 见 WinMain 里那一段等待：不等就直接写，那几行会被静默丢掉。 */
+static volatile int g_log_ready = 0;
+
 /* 把"不是 JPEG"的帧存到 U 盘上，让用户带回来。
  * 为什么必须做：手机推的到底是 JPEG 还是 H.264，决定我们要不要移植一个
  * H.264 解码器 —— 这是整个项目剩下的最大未知数。而只要头几个字节就能
@@ -745,6 +749,10 @@ static DWORD WINAPI session_thread(LPVOID param)
      *   放在这个线程里，它卡住也只是连接跑不起来，屏幕照样是活的。 */
     if (cl_log_open() != 0)
         set_status(L"日志文件建不出来，程序继续跑（但出问题就没日志可查）");
+    /* 告诉主线程「日志已可用」—— 它下面要往日志里写界面初始化的分步记录，
+     * 不等这一下的话，那几行会因为 g_h 还没打开而被直接丢掉，
+     * 恰好丢掉最关键的那几行。 */
+    g_log_ready = 1;
 
     cl_log("──────── 启动自检 ────────");
     cl_log("第1步 窗口已显示、界面已就绪（主线程，全程不碰文件）");
@@ -1230,6 +1238,17 @@ int WINAPI WinMain(HINSTANCE hi, HINSTANCE hp, LPWSTR cmdline, int show)
             set_status(L"线程创建失败：车机资源不足，请重启车机后再试");
         }
     }
+    /* ⚠ 等会话线程把日志打开（最多 3 秒）。
+     *   不等的话，下面这几行会因为 g_h 还没打开而被静默丢掉 ——
+     *   而它们正是"界面崩在第几步"的唯一线索。 */
+    {
+        int k;
+        for (k = 0; k < 30 && !g_log_ready; k++)
+            Sleep(100);
+        cl_log("界面 0/4 日志已就绪（等了 %d 毫秒）", k * 100);
+        cl_log_sync();
+    }
+
     cl_log("界面 1/4 开始建字体（CreateFontIndirectW ×5）");
     cl_log_sync();   /* ⚠ 每一步之后都强制刷盘：万一下一步就崩，
                       *   这一行必须已经在盘上，否则日志等于白记。 */
