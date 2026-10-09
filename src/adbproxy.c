@@ -10,15 +10,28 @@
 
 /* 日志：只在真正上车机编的时候启用。
  * 主机测试（-DADBP_HOST_TEST）里没有 cllog.c，所以那边宏展开成空。 */
+/* 屏幕回调（由 viewer 装上来）。没装就是空指针，什么也不做。
+ * ⚠ 刻意放在 #ifndef ADBP_HOST_TEST 外面：主机测试也用同一份头文件，
+ *   只在车机分支里定义会让主机那边的链接对不上。 */
+static void (*g_trace_cb)(const char *what, unsigned int a, unsigned int b);
+
+void adbp_set_trace_cb(void (*cb)(const char *what, unsigned int a, unsigned int b))
+{
+    g_trace_cb = cb;
+}
+
 #ifndef ADBP_HOST_TEST
 #include "cllog.h"
 #define ADBP_LOG(...) cl_log(__VA_ARGS__)
 
-/* 把 ADB 握手的每一步接到日志上。
- * 车机上只有一次机会，而「发到哪一步、手机回没回」是唯一能定位的手段。 */
+/* 把 ADB 握手的每一步接到日志上 —— 并且【同时接到屏幕上】。
+ * 车机上只有一次机会，而「发到哪一步、手机回没回」是唯一能定位的手段；
+ * 只写日志的话，用户在当时是看不见的（这一条是现场反馈回来的真问题）。 */
 static void adb_trace_log(const char *what, unsigned int a, unsigned int b)
 {
     cl_log("   [握手] %s  (0x%x, 0x%x)", what, a, b);
+    if (g_trace_cb)
+        g_trace_cb(what, a, b);
 }
 #else
 #define ADBP_LOG(...) ((void)0)
