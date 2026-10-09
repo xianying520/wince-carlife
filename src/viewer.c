@@ -70,6 +70,13 @@ static int      g_last_px = 0, g_last_py = 0, g_have_last = 0;
 static unsigned char *g_rx = 0;
 static int      g_rxcap = 0;
 
+/* CMD 通道的接收缓冲。
+ * ⚠ 以前主循环【只收视频通道】，CMD 上手机说什么我们一个字都看不见。
+ *   万一它发了一条要我们回的报文（比如认证、错误码、息屏通知），
+ *   就等于把天聊死了 —— 而现场只会看到「一直收不到画面」，查不出原因。 */
+static unsigned char g_cmd_rx[1024];
+static int      g_cmd_msgs = 0;
+
 /* 等手机的总秒数。用户可能是先开程序再插线，所以必须等得住。 */
 #define WAIT_SECS  120
 
@@ -1137,6 +1144,33 @@ static void run_session(void)
         }
         if (g_quit)
             return;
+
+        /* 顺手把 CMD 通道也收一遍。
+         * 只在 select 说「真有数据」时才去读：
+         *   · 没数据时一分钱不花（不会拖慢收帧）；
+         *   · 真有数据时给 500 毫秒把整条报文收完 ——
+         *     报文头 8 字节 + 报文体，从本地回环过来是微秒级的，
+         *     给 500 毫秒是为了万一只到了一半，不至于把流读散。 */
+        {
+            fd_set rf;
+            struct timeval tv0;
+            FD_ZERO(&rf);
+            FD_SET(g_cmd, &rf);
+            tv0.tv_sec = 0;
+            tv0.tv_usec = 0;
+            if (select((int)g_cmd + 1, &rf, NULL, NULL, &tv0) > 0) {
+                unsigned long cmid = 0;
+                int clen = 0;
+                if (cl_recv_cmd(g_cmd, &cmid, g_cmd_rx,
+                                (int)sizeof(g_cmd_rx), &clen, 500) == CL_OK) {
+                    g_cmd_msgs++;
+                    cl_log("CMD 通道收到消息 id = 0x%X（%d 字节，累计 %d 条）",
+                           cmid, clen, g_cmd_msgs);
+                    if (clen > 0)
+                        cl_log_hex("  CMD 内容", g_cmd_rx, clen < 32 ? clen : 32);
+                }
+            }
+        }
 
         r = cl_recv_video(g_vid, &ts, &vt, g_rx, g_rxcap, &len, 20);
         if (r == CL_OK) {
