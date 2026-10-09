@@ -16,8 +16,16 @@
  *      那主程序就是被车机外壳用 WM_CLOSE 关掉的。
  */
 #include <windows.h>
+#include <winsock2.h>   /* 第 17 项要测 WSAStartup */
 #include <stdio.h>
 #include <string.h>
+
+/* ⚠ 关键：把【主程序真正用的那些代码】也拉进来测。
+ *   原来这套体检只测了 API「零件」—— 12 项全过，说明零件都好；
+ *   而主程序照样闪退，说明问题出在【我写的那些代码】里。
+ *   所以现在把 ui.c 和 cllog.c 直接链进来，逐项调用。 */
+#include "ui.h"
+#include "cllog.h"
 
 #define MAXLINE 40
 
@@ -86,6 +94,15 @@ static DWORD WINAPI dummy_thread(LPVOID p) { (void)p; return 0; }
 
 /* 双线程同时写日志 —— 复现主程序那个「加锁之后反而更早崩」的竞态 */
 static volatile int g_race_stop = 0;
+
+/* 用【真实的 cllog 模块】做双线程写入 —— 测的是带锁之后还会不会出问题 */
+static DWORD WINAPI race_cllog_thread(LPVOID p)
+{
+    (void)p;
+    while (!g_race_stop)
+        cl_log("  竞态线程写 cllog");
+    return 0;
+}
 static DWORD WINAPI race_thread(LPVOID p)
 {
     (void)p;
@@ -338,11 +355,75 @@ int WINAPI WinMain(HINSTANCE hInst, HINSTANCE hPrev, LPWSTR lpCmd, int nShow)
     begin(12, L"InvalidateRect + UpdateWindow ×50", "InvalidateRect + UpdateWindow x50");
     done(12, L"InvalidateRect + UpdateWindow ×50", "InvalidateRect + UpdateWindow x50", 1);
 
+    /* ══════════ 下面这些才是【主程序真正在跑的代码】 ══════════ */
+
+    begin(13, L"cl_log_open + 连续写 4 行（cllog 模块）", "cl_log_open + 写 4 行");
+    ok = (cl_log_open() == 0);
+    cl_log("体检 cllog: 第 1 行");
+    cl_log("体检 cllog: 第 2 行 %d", 12345);
+    cl_log("体检 cllog: 第 3 行");
+    cl_log_sync();
+    done(13, L"cl_log_open + 连续写 4 行", "cl_log_open + 写 4 行", ok);
+
+    begin(14, L"ui_init（真实界面代码：5 个字体的 CreateFontIndirectW + 5 个画刷）", "ui_init");
+    ui_init(hwnd);
+    done(14, L"ui_init（真实界面代码）", "ui_init", ui_ready() ? 1 : 0);
+
+    begin(15, L"ui_paint_minimal（真画一次兜底画面）", "ui_paint_minimal");
+    {
+        HDC dc = GetDC(hwnd);
+        RECT rc;
+        GetClientRect(hwnd, &rc);
+        ui_paint_minimal(dc, &rc);
+        ReleaseDC(hwnd, dc);
+    }
+    done(15, L"ui_paint_minimal（真画一次）", "ui_paint_minimal", 1);
+
+    begin(16, L"ui_paint_connect（真画一次完整进度板）", "ui_paint_connect");
+    {
+        HDC dc = GetDC(hwnd);
+        RECT rc;
+        GetClientRect(hwnd, &rc);
+        ui_headline(L"用 USB 线把手机连到车机", L"然后打开「USB 调试」并点「允许」");
+        ui_stage(0, UI_ST_ACTIVE);   ui_stage_detail(0, L"正在等待…");
+        ui_stage(1, UI_ST_DONE);     ui_stage_detail(1, L"com.baidu.carlife");
+        ui_stage(2, UI_ST_FAIL);     ui_stage_detail(2, L"手机端没监听");
+        ui_footline(L"体检：这是完整进度板的样子");
+        ui_paint_connect(dc, &rc);
+        ReleaseDC(hwnd, dc);
+    }
+    done(16, L"ui_paint_connect（真画一次）", "ui_paint_connect", 1);
+
+    begin(17, L"WSAStartup / WSACleanup（网络栈）", "WSAStartup");
+    {
+        WSADATA wsa;
+        ok = (WSAStartup(MAKEWORD(2, 2), &wsa) == 0);
+        if (ok) WSACleanup();
+    }
+    done(17, L"WSAStartup / WSACleanup", "WSAStartup", ok);
+
+    begin(18, L"两根线程同时写 cllog（带锁的真实日志模块）", "双线程写 cllog");
+    {
+        DWORD tid = 0;
+        HANDLE h2;
+        g_race_stop = 0;
+        h2 = CreateThread(0, 0, race_cllog_thread, 0, 0, &tid);
+        if (h2) {
+            int i;
+            for (i = 0; i < 300; i++) cl_log("  主线程写 cllog");
+            g_race_stop = 1;
+            WaitForSingleObject(h2, 3000);
+            CloseHandle(h2);
+            ok = 1;
+        } else ok = 0;
+    }
+    done(18, L"两根线程同时写 cllog（带锁）", "双线程写 cllog", ok);
+
     ln(L"────────────────────────────");
-    ln(L"全部 12 项跑完，没有崩。");
+    ln(L"全部 18 项跑完，没有崩。");
     ln(L"下面看 WM_CLOSE 计数：如果它一直在涨，");
     ln(L"说明车机外壳在偷偷关我们的窗口 —— 那就是主程序的死因。");
-    lg("全部 12 项跑完，没有崩。");
+    lg("全部 18 项跑完，没有崩。");
     InvalidateRect(hwnd, 0, FALSE);
     UpdateWindow(hwnd);
 
