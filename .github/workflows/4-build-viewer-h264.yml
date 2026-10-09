@@ -51,6 +51,13 @@ jobs:
           git log --oneline -1
           echo "源文件数: $(ls src/*.c | wc -l)"
 
+      - name: 编译车机体检程序
+        run: |
+          export PATH="$HOME/tc/cegcc/bin:$PATH"
+          make check_exe
+          python3 scripts/checkpe.py build/WinCE-CarLifeCheck.exe
+          ls -l build/WinCE-CarLifeCheck.exe
+
       - name: 编译 viewer（make 会自动发现 h264bsd 并打开 -DHAS_H264）
         run: |
           export PATH="$HOME/tc/cegcc/bin:$PATH"
@@ -70,5 +77,8 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: wince-viewer-h264
-          path: build/WinCE-CarLifeView.exe
+          # 两个都传：体检程序是用来二分定位的，和主程序同等重要
+          path: |
+            build/WinCE-CarLifeView.exe
+            build/WinCE-CarLifeCheck.exe
           if-no-files-found: error
