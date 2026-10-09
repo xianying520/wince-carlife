@@ -82,7 +82,8 @@ def render(state, path, C, G, sw=800, sh=480):
     f_bar = pick_font(px(G["UI_F_BAR"]))
 
     pad = px(G["UI_PAD"])
-    barh = px(G["UI_BAR_H"])
+    barh = px(G["UI_BAR_H"])     # 底栏
+    toph = px(G["UI_TOP_H"])     # 顶栏（两行）
 
     def text_at(x, y, s, font, color, anchor="la"):
         d.text((x, y), s, font=font, fill=color, anchor=anchor)
@@ -90,21 +91,28 @@ def render(state, path, C, G, sw=800, sh=480):
     def vcenter(y, h):
         return y + h // 2
 
-    # ── 顶栏 ──
+    # ── 顶栏（两行：品牌 + 一句说明）──
+    # ⚠ 必须和 ui.c 里的 ui_paint_connect 顶栏那段一一对应，
+    #   否则「稿子好看、实机走样」——这脚本存在的意义就是防止这件事。
     tcl, tcr = content_cols(G, sw)
-    text_at(tcl, vcenter(0, barh), "CarLife 车机端", f_bar, C["UI_MUTED"], "lm")
-    text_at(tcr, vcenter(0, barh), "运行日志：carlife-log.txt", f_bar,
-            C["UI_HINT"], "rm")
-    d.rectangle([tcl, barh, tcr - 1, barh], fill=C["UI_RULE"])
+    f_brand = pick_font(px(G["UI_F_BRAND"]), True)
+    f_tag = pick_font(px(G["UI_F_TAG"]))
+    yb = px(4)
+    text_at(tcl, yb, "XianyCar+互联", f_brand, C["UI_TEXT"], "la")
+    text_at(tcl, yb + px(G["UI_F_BRAND"] + 3) + px(1),
+            "支持WinCE车机的智驾车载互联工具", f_tag, C["UI_MUTED"], "la")
+    text_at(tcr, yb + px(G["UI_F_BRAND"] + 3) // 2,
+            "运行日志：carlife-log.txt", f_bar, C["UI_HINT"], "rm")
+    d.rectangle([tcl, toph, tcr - 1, toph], fill=C["UI_RULE"])
 
     # ── 内容块垂直居中 ──
     tracks = G["UI_STEPS"] * px(G["UI_STEP_H"])
     block = (px(G["UI_HEAD_H"]) + px(G["UI_SUB_GAP"]) + px(G["UI_SUB_H"])
              + px(G["UI_TRACK_GAP"]) + tracks
              + px(G["UI_DETAIL_GAP"]) + px(G["UI_DETAIL_H"]))
-    top = barh + (sh - 2 * barh - block) // 2
-    if top < barh + px(8):
-        top = barh + px(8)
+    top = toph + (sh - toph - barh - block) // 2
+    if top < toph + px(8):
+        top = toph + px(8)
 
     clx, crx = content_cols(G, sw)
     y = top
