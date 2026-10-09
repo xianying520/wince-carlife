@@ -14,12 +14,21 @@
 #include "carlife.h"
 #include "display.h"
 #include "adbproxy.h"
+#include "adbio_ce.h"
 #include "third_party/nanojpeg.h"
 #include "cllog.h"
 #include "ui.h"
 #ifdef HAS_H264
 #include "h264dec.h"
 #endif
+
+/* 把一整行原样写进日志。
+ * ⚠ 必须走 "%s"，不能把这一行直接当格式串：从注册表读出来的驱动名/设备名
+ *   万一含一个 % 就会把 cl_log 的格式化带跑偏。 */
+static void cl_log_line(const char *line)
+{
+    cl_log("%s", line ? line : "");
+}
 
 /* 底部栏的高度、按钮宽度都已归 ui.c 统一管理（见 ui_layout.h）。
  * 这里原来的一套常量已删 —— 两处各写一套必然走样。 */
@@ -639,6 +648,8 @@ static int open_transport(void)
     char   reason[256];
     WCHAR  t[320];
     int    tries = 0;
+    DWORD  t0 = GetTickCount();
+#define WAITED_SEC ((int)((GetTickCount() - t0) / 1000))
 
     for (;;) {
         reason[0] = 0;
@@ -648,7 +659,7 @@ static int open_transport(void)
                        L"② 手机上打开「USB 调试」并点「允许」");
         } else {
             wsprintfW(t, L"① 用 USB 线连手机   ② 打开「USB 调试」并允许"
-                         L"      （已等待 %d 秒）", tries * 2);
+                         L"      （已等待 %d 秒）", WAITED_SEC);
             set_status(t);
         }
 
@@ -689,15 +700,15 @@ static int open_transport(void)
             {
                 WCHAR f[200];
                 wsprintfW(f, L"已等待 %d 秒。日志里记着每个 ADB 设备名各自的错误码。",
-                          tries * 2);
+                          WAITED_SEC);
                 ui_footline(f);
             }
         }
-        cl_log("   第 %d 次尝试失败。常见原因：",
-               tries + 1);
+        cl_log("   第 %d 次尝试失败（已等 %d 秒）。常见原因：",
+               tries + 1, WAITED_SEC);
+        cl_log("     · 手机上没开「开发者选项 → USB 调试」，或弹框没点「允许」");
+        cl_log("     · USB 用途选成了「连接车辆」——请改回「传输文件」再看");
         cl_log("     · 手机没插线 / 线只充电不传数据 / 插的不是支持数据的 USB 口");
-        cl_log("     · 手机上没点「允许 USB 调试」");
-        cl_log("     · 车机系统里没有 ADB 驱动（ADB1: 这个设备打不开）");
 
         /* ADB 不通 —— 把原因留着，这是现场排查最关键的信息。
          * ⚠ 这里不能用 lstrcpynA：本工具链的 coredll 里只有 Unicode 版的
@@ -712,7 +723,7 @@ static int open_transport(void)
         tries++;
         if (g_quit)
             return -1;                        /* 用户按了退出，别死等 */
-        if (tries * 2 >= WAIT_SECS)
+        if (WAITED_SEC >= WAIT_SECS)
             break;                            /* 等够时间还没成，退到下面走网共享 */
 
         /* 等了几轮之后，把失败原因也显示出来，方便现场判断卡在哪一步 */
@@ -722,12 +733,13 @@ static int open_transport(void)
             for (k = 0; k < 255 && g_adb_reason[k]; k++)
                 w[k] = (WCHAR)(unsigned char)g_adb_reason[k];
             w[k] = 0;
-            wsprintfW(t, L"等待手机中（已 %d 秒）…%s", tries * 2, w);
+            wsprintfW(t, L"等待手机中（已 %d 秒）…%s", WAITED_SEC, w);
             set_status(t);
         }
 
         Sleep(2000);                          /* 给窗口留出刷新的时间 */
     }
+#undef WAITED_SEC
 
     /* 退回 USB 网络共享：手机开共享后车机会拿到 IP，扫常见网段 */
     {
@@ -852,6 +864,10 @@ static DWORD WINAPI session_thread(LPVOID param)
         if (g_vid   != INVALID_SOCKET) { closesocket(g_vid);   g_vid   = INVALID_SOCKET; }
         if (g_touch != INVALID_SOCKET) { closesocket(g_touch); g_touch = INVALID_SOCKET; }
         if (g_adb_ok) { adbp_stop(); g_adb_ok = 0; }
+        /* 设备句柄每轮重开一次：手机拔插过之后旧句柄可能已经失效。
+         * 一轮一开既能自愈，又不会像以前那样每 2 秒就折腾它一次
+         * （那个驱动的关闭是脏的，见 adbio_ce.c 的说明）。 */
+        adbio_ce_reopen();
         g_route      = 0;
         g_miss       = 0;
         g_trunc_warn = 0;
@@ -872,6 +888,21 @@ static DWORD WINAPI session_thread(LPVOID param)
             InvalidateRect(g_hwnd, 0, FALSE);
 
         cl_log("=== 开始新的一轮 ===");
+
+        /* 每一轮开头把车机的 USB/ADB 状态记一遍。
+         * 这是判断「ADB1: 为什么打不开」的根：
+         *   错误 55 = 驱动根本没注册（手机上没开 USB 调试）；
+         *   错误 110 = 驱动在、但 ADB 接口还没就绪。
+         * 两种原因的处理办法完全不同，凭屏幕上的「打不开」是分不出来的。 */
+        {
+            unsigned long ib, ob, re, we, nd, le;
+            adbio_ce_stats(&ib, &ob, &re, &we, &nd, &le);
+            cl_log("   上一轮设备统计: 收到 %lu 字节 / 发出 %lu 字节 / "
+                   "读失败 %lu 次 / 写失败 %lu 次 / 空读 %lu 次 / 末次错误 %lu",
+                   ib, ob, re, we, nd, le);
+            adbio_ce_stats_reset();
+        }
+        adbio_ce_dump_usb_state(cl_log_line);
     }
 
     WSACleanup();
