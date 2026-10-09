@@ -1199,16 +1199,7 @@ int WINAPI WinMain(HINSTANCE hi, HINSTANCE hp, LPWSTR cmdline, int show)
      * 那边再怎么卡，主线程照样活着、窗口照样会重画。
      * 另：日志目录也改成车机内部存储优先，U 盘放到最后兜底。 */
 
-    /* 界面资源（字体、画刷都在这个函数里建）—— 纯内存，不碰文件 */
-    ui_init(g_hwnd);
-    sync_button_labels();
-    ui_headline(L"用 USB 线把手机连到车机",
-                L"然后在手机上打开「USB 调试」并点「允许」");
-    stage_set(0, UI_ST_ACTIVE, L"正在准备…");
-    InvalidateRect(g_hwnd, 0, FALSE);
-    UpdateWindow(g_hwnd);            /* 现在才是新界面（走 ui_paint_connect）*/
-
-    /* 收帧缓冲也是纯内存 */
+    /* 收帧缓冲（纯内存）*/
     g_rxcap = RX_CAP;
     g_rx = (unsigned char *)malloc(g_rxcap);
     if (!g_rx) {
@@ -1217,27 +1208,47 @@ int WINAPI WinMain(HINSTANCE hi, HINSTANCE hp, LPWSTR cmdline, int show)
         return 1;
     }
 
-
+    /* ⚠⚠ 会话线程【必须在 ui_init 之前启动】。
+     *
+     *   实锤：上一版窗口闪一下就没了、而且【一个日志文件都没有】——
+     *   因为会话线程（也就是打开日志的那一段）排在 ui_init 后面，
+     *   界面一崩，日志就永远没机会被创建，我们手上一点线索都没有。
+     *
+     *   现在反过来：先把会话线程拉起来（它第一件事就是开日志、写一行
+     *   「窗口已显示」），之后再建界面。这样界面哪怕再崩，
+     *   日志也已经躺在盘上，明确写着走到哪一步了。
+     *
+     *   ⚠ 界面初始化的每一步之间也写一行日志 —— 崩在哪一步一目了然。
+     *     这几行日志写在主线程上是有意的：万一写盘卡住，
+     *     屏幕上【已经】有兜底画面了（那一步在更前面），窗口不会全黑。 */
     {
-        /* ⚠ WSAStartup 也【搬到会话线程里去做】。
-         *   网络栈初始化在某些 ROM 上会卡住，留在主线程上就是又一次
-         *   「窗口建了但消息循环起不来」。主线程现在真的只剩窗口和消息循环。 */
-        /* ⚠ 连接过程必须放后台线程。
-         *   原来 run_session() 直接在主线程跑，而它里面有等待用户的循环
-         *   （等插线、等手机点「允许 USB 调试」）—— 主线程一被占住，
-         *   窗口连一次 WM_PAINT 都处理不了，
-         *   「请插 USB 线」「请打开 USB 调试」这类提示【一个字都显示不出来】，
-         *   用户根本不知道要干什么。放后台线程后提示才能实时更新。 */
         DWORD tid = 0;
         g_hthr = CreateThread(0, 0, session_thread, 0, 0, &tid);
         if (!g_hthr) {
-            /* ⚠ 绝不退回「在主线程上跑会话」那条老路：
-             *   会话里有 120 秒的等待循环，一放主线程，消息循环就到不了，
-             *   窗口又会变成一片空白 —— 那正是已经踩过两次的坑。
-             *   开不出线程就直接告诉用户，窗口保持活着。 */
+            /* 绝不退回「在主线程上跑会话」：会话里有 120 秒等待，一放主线程
+             * 消息循环就到不了，窗口又会变成一片空白 —— 那正是踩过两次的坑。 */
             set_status(L"线程创建失败：车机资源不足，请重启车机后再试");
         }
     }
+
+    g_ui_stage_note = 1;
+    cl_log("界面 1/4 开始建字体（CreateFontIndirectW ×5）");
+    ui_init(g_hwnd);
+    g_ui_stage_note = 2;
+    cl_log("界面 2/4 字体和画刷已建好");
+    sync_button_labels();
+    ui_headline(L"用 USB 线把手机连到车机",
+                L"然后在手机上打开「USB 调试」并点「允许」");
+    stage_set(0, UI_ST_ACTIVE, L"正在准备…");
+    g_ui_stage_note = 3;
+    cl_log("界面 3/4 开始画完整界面（会用到 Ellipse / CreatePen / Rectangle —— "
+           "这三个还没在这台车机上验证过）");
+    InvalidateRect(g_hwnd, 0, FALSE);
+    UpdateWindow(g_hwnd);            /* 现在才是新界面（走 ui_paint_connect）*/
+    g_ui_stage_note = 4;
+    cl_log("界面 4/4 完整界面绘制完成");
+    cl_log_sync();
+
 
     /* 留在窗口里，让用户看清最后的状态 */
     while (!g_quit && GetMessageW(&msg, 0, 0, 0)) {
