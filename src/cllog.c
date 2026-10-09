@@ -68,17 +68,29 @@ static int g_write_failed = 0;   /* 写日志失败的次数 */
  *   整段写入用临界区串起来，从根上排除这一类问题。 */
 static CRITICAL_SECTION g_log_lock;
 static int              g_log_lock_ready = 0;
+
+/* ⚠⚠ 锁必须【只在 cl_log_open 里初始化一次】，绝不能延迟初始化。
+ *
+ *   踩过的坑：原来写成「第一次用的时候如果没初始化就初始化它」——
+ *   而两个线程（会话线程写日志头、主线程写界面分步）会几乎同时第一次进来，
+ *   于是双双看到「还没初始化」，双双对同一个结构调用 InitializeCriticalSection。
+ *   这是未定义行为，直接崩。
+ *
+ *   现象完全对上：改成这套锁之后，程序反而比之前更早闪退，
+ *   日志正好停在两个线程同时开始写的那一瞬间。
+ *
+ *   现在：cl_log_open 里先初始化再做别的；
+ *   而 g_h 只有 cl_log_open 之后才有效，cl_log 开头会检查 g_h，
+ *   所以锁绝不会在初始化之前被用到。 */
 static void log_lock_enter(void)
 {
-    if (!g_log_lock_ready) {
-        InitializeCriticalSection(&g_log_lock);
-        g_log_lock_ready = 1;
-    }
-    EnterCriticalSection(&g_log_lock);
+    if (g_log_lock_ready)
+        EnterCriticalSection(&g_log_lock);
 }
 static void log_lock_leave(void)
 {
-    LeaveCriticalSection(&g_log_lock);
+    if (g_log_lock_ready)
+        LeaveCriticalSection(&g_log_lock);
 }
 
 /* 写日志（不缓冲、立刻落盘）。
@@ -264,6 +276,12 @@ int cl_log_open(void)
     int i, n;
 
     g_t0 = GetTickCount();
+
+    /* 锁只在这里初始化一次 —— 见上面那段说明，绝不能延迟初始化 */
+    if (!g_log_lock_ready) {
+        InitializeCriticalSection(&g_log_lock);
+        g_log_lock_ready = 1;
+    }
 
     /* 先算 exe 自己所在目录 —— 用户把整个文件夹拷到 U 盘/车机上，
      * 日志就落在同一个文件夹里，最好找。 */
