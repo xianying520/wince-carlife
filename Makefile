@@ -85,11 +85,14 @@ check_exe: $(CHECK_EXE)
 	@echo "==> 体检程序: $(CHECK_EXE)"
 	@ls -l $(CHECK_EXE)
 
-$(BUILD)/check.o: src/check.c | $(BUILD)
+$(BUILD)/check.o: src/check.c src/ui.h src/cllog.h src/ui_layout.h | $(BUILD)
 	$(CC) $(CFLAGS) -c $< -o $@
 
-$(CHECK_EXE): $(BUILD)/check.o
-	$(CC) $(LDFLAGS) -o $@ $^ $(CORELIB)
+# ⚠ 体检程序要链【真实的】ui.o 和 cllog.o ——
+#   它测的不只是 API 零件，还要把主程序真正跑的那些代码一起测。
+#   另外它要用 Winsock（第 17 项），所以也要链 ws2。
+$(CHECK_EXE): $(BUILD)/check.o $(BUILD)/ui.o $(BUILD)/cllog.o
+	$(CC) $(LDFLAGS) -o $@ $^ $(CORELIB) $(NETLIB)
 
 $(MAIN_EXE): $(BUILD)/main.o
 	$(CC) $(LDFLAGS) -o $@ $^ $(CORELIB)
