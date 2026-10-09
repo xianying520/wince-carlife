@@ -8,6 +8,19 @@
 static HANDLE g_h = INVALID_HANDLE_VALUE;
 static WCHAR  g_name[64];
 
+/* ── 诊断计数 ──
+ * 现场只有一次机会，所以每个失败点都要留下数字证据：
+ * 到底是「写不进去」、「读不出来」、还是「读得到但此刻没数据」。
+ * 这三种以前全都塌成同一个 -1，现场根本分不清。 */
+static unsigned long g_in_bytes;      /* 累计读到的字节 */
+static unsigned long g_out_bytes;     /* 累计写出的字节 */
+static unsigned long g_err_read;      /* ReadFile 真失败次数 */
+static unsigned long g_err_write;     /* WriteFile 真失败次数 */
+static unsigned long g_no_data;       /* ReadFile 成功但 0 字节（暂时没数据） */
+static unsigned long g_last_err;      /* 最近一次失败的错误码 */
+static int           g_err_run;       /* 连续读失败计数（用来避免空转） */
+static int           g_fatal;         /* 设备已确认消失，句柄该丢了 */
+
 /* 手写的宽字符串拷贝。
  * ⚠ 刻意不用 lstrcpynW / lstrcpyW：手上的 COREDLL 导出表里没有它们
  *   （只有 lstrcmpW / lstrcmpiW）。虽然本次链接通过了，但一旦真机上缺这个
@@ -22,7 +35,9 @@ static void w_copy(WCHAR *dst, const WCHAR *src, int cap)
     dst[i] = 0;
 }
 
-/* 候选设备名。ADB1: 是 EasyConnected 实际在用的名字（见 docs/ 里的证据），
+/* 候选设备名。ADB1: 是这台车机实际在用的名字 —— 两条独立证据：
+ *   ① 车机自带 CECarLife.exe 的字符串里就有 "ADB1:"；
+ *   ② 车机自带 adb_driver.dll 的注册表值 Name = "ADB1:"。
  * 其余的是常见变体，多试几个不吃亏。 */
 static const WCHAR *g_cands[] = {
     L"ADB1:", L"ADB0:", L"ADB2:", L"ADB3:", L"tADB1:", L"ADB:"
@@ -33,27 +48,104 @@ int adbio_ce_is_open(void)
     return g_h != INVALID_HANDLE_VALUE;
 }
 
+int adbio_ce_fatal(void)
+{
+    return g_fatal;
+}
+
+void adbio_ce_stats(unsigned long *in_bytes, unsigned long *out_bytes,
+                    unsigned long *read_err, unsigned long *write_err,
+                    unsigned long *no_data, unsigned long *last_err)
+{
+    if (in_bytes)  *in_bytes  = g_in_bytes;
+    if (out_bytes) *out_bytes = g_out_bytes;
+    if (read_err)  *read_err  = g_err_read;
+    if (write_err) *write_err = g_err_write;
+    if (no_data)   *no_data   = g_no_data;
+    if (last_err)  *last_err  = g_last_err;
+}
+
+void adbio_ce_stats_reset(void)
+{
+    g_in_bytes = 0;
+    g_out_bytes = 0;
+    g_err_read = 0;
+    g_err_write = 0;
+    g_no_data = 0;
+    g_last_err = 0;
+}
+
+/* 这个错误码是不是「设备真的没了」。
+ * 只有这几种才允许把句柄判死；其余的（尤其是「现在没数据」）都必须继续等。 */
+static int err_is_fatal(DWORD e)
+{
+    return (e == ERROR_DEV_NOT_EXIST || e == ERROR_BAD_UNIT ||
+            e == ERROR_INVALID_HANDLE || e == ERROR_ACCESS_DENIED);
+}
+
+/* ⚠⚠ 本文件最关键的一段修改，先说清楚为什么。
+ *
+ *   现场日志（carlife-log.txt）里反复出现这一幕：
+ *       [19.581] ADB 设备已打开: ADB1:
+ *       [19.595]    XX   ADB 设备打开 + 认证 + 端口转发  ← ADB 认证失败（错误 -1）
+ *   也就是说：设备【打开成功】了，但只过了 14 毫秒就报「认证失败」。
+ *   一次真正的协议握手不可能 14 毫秒就失败 —— 8 秒的等待时间根本没走到。
+ *
+ *   原因就在这个函数里：以前读一次，ReadFile 不成功就直接返回 -1，
+ *   而上层把 -1 理解成「传输出错，握手失败」。
+ *   可这台车机的 ADB 驱动是【非阻塞】的：刚发完 CNXN 去读应答时，
+ *   它必然先返回一次「此刻没数据」，于是我们立刻自己判了自己死刑。
+ *
+ *   现在改成：只有「设备真的没了」才算失败，其余一律在超时预算内接着等。
+ *   超时预算到了才返回 0（= 超时），由上层区分「手机没应答」和「设备读不了」。 */
 static int ce_read(void *ctx, unsigned char *buf, int len, int timeout_ms)
 {
-    DWORD got = 0;
+    DWORD t0;
     (void)ctx;
 
     if (g_h == INVALID_HANDLE_VALUE)
         return -1;
 
-    /* 流驱动没有 SetCommTimeouts 那套，靠等句柄来模拟超时。
-     * 大多数 WinCE 流驱动的句柄在有数据时会变成有信号状态。
-     * ⚠ 如果某个驱动不支持，WaitForSingleObject 会立刻返回，
-     *   于是 ReadFile 可能阻塞 —— 这一点只能靠真机实测确认。 */
-    if (timeout_ms >= 0) {
-        DWORD w = WaitForSingleObject(g_h, (DWORD)timeout_ms);
-        if (w != WAIT_OBJECT_0)
-            return 0;                       /* 超时：ADB 语义里 0 就是超时 */
-    }
+    t0 = GetTickCount();
+    g_err_run = 0;
 
-    if (!ReadFile(g_h, (LPVOID)buf, (DWORD)len, &got, NULL))
-        return -1;
-    return (int)got;
+    for (;;) {
+        DWORD got = 0;
+
+        if (ReadFile(g_h, (LPVOID)buf, (DWORD)len, &got, NULL)) {
+            if (got > 0) {
+                g_in_bytes += got;
+                g_err_run = 0;
+                return (int)got;
+            }
+            g_no_data++;                       /* 0 字节 = 现在还没数据，不是错 */
+            g_err_run = 0;
+        } else {
+            DWORD e = GetLastError();
+            g_last_err = e;
+            if (err_is_fatal(e)) {
+                g_err_read++;
+                g_fatal = 1;
+                return -1;
+            }
+            /* 非致命错误：可能就是驱动表达「暂时没有数据」的方式。
+             * 连续太多次还一次都没读到就认输 —— 免得把 8 秒空转掉，
+             * 也免得日志里看不出到底属于哪种情况。 */
+            if (++g_err_run >= 16) {
+                g_err_read++;
+                g_err_run = 0;
+                return -1;
+            }
+        }
+
+        if (timeout_ms <= 0)
+            return 0;                          /* 非阻塞：这一轮就到这 */
+
+        if ((int)(GetTickCount() - t0) >= timeout_ms)
+            return 0;                          /* 超时：上层要把它和「出错」分开 */
+
+        Sleep(5);                              /* 别把 CPU 打满 */
+    }
 }
 
 static int ce_write(void *ctx, const unsigned char *buf, int len)
@@ -63,8 +155,15 @@ static int ce_write(void *ctx, const unsigned char *buf, int len)
 
     if (g_h == INVALID_HANDLE_VALUE)
         return -1;
-    if (!WriteFile(g_h, (LPVOID)buf, (DWORD)len, &put, NULL))
+    if (!WriteFile(g_h, (LPVOID)buf, (DWORD)len, &put, NULL)) {
+        DWORD e = GetLastError();
+        g_last_err = e;
+        g_err_write++;
+        if (err_is_fatal(e))
+            g_fatal = 1;
         return -1;
+    }
+    g_out_bytes += put;
     return (int)put;
 }
 
@@ -77,14 +176,122 @@ ADB_IO adbio_ce_io(void)
     return io;
 }
 
+/* ── 注册表小工具（诊断用）── */
+static int reg_has_key(const WCHAR *path)
+{
+    HKEY k;
+    if (RegOpenKeyExW(HKEY_LOCAL_MACHINE, path, 0, KEY_READ, &k) != ERROR_SUCCESS)
+        return 0;
+    RegCloseKey(k);
+    return 1;
+}
+
+static int reg_get_str(const WCHAR *path, const WCHAR *val, char *out, int cap)
+{
+    HKEY  k;
+    DWORD cb, type = 0;
+    WCHAR buf[256];
+    int   i;
+
+    if (!out || cap <= 0) return -1;
+    out[0] = 0;
+    if (RegOpenKeyExW(HKEY_LOCAL_MACHINE, path, 0, KEY_READ, &k) != ERROR_SUCCESS)
+        return -1;
+    buf[0] = 0;
+    cb = (DWORD)(sizeof(buf) - sizeof(WCHAR));
+    if (RegQueryValueExW(k, val, 0, &type, (BYTE *)buf, &cb) != ERROR_SUCCESS) {
+        RegCloseKey(k);
+        return -1;
+    }
+    RegCloseKey(k);
+    for (i = 0; i < cap - 1 && buf[i] && i < 255; i++)
+        out[i] = (char)(buf[i] & 0xFF);        /* 驱动名/前缀都是 ASCII */
+    out[i] = 0;
+    return i > 0 ? 0 : -1;
+}
+
+static void report_key(void (*emit)(const char *line), const char *label,
+                       const WCHAR *path, int with_values)
+{
+    char line[300], v[220];
+    int  has = reg_has_key(path);
+
+    snprintf(line, sizeof(line), "   %s : %s", label, has ? "有" : "没有");
+    emit(line);
+    if (!has || !with_values) return;
+
+    if (reg_get_str(path, L"Dll", v, (int)sizeof(v)) == 0) {
+        snprintf(line, sizeof(line), "      Dll = %s", v);
+        emit(line);
+    }
+    if (reg_get_str(path, L"Prefix", v, (int)sizeof(v)) == 0) {
+        snprintf(line, sizeof(line), "      Prefix = %s", v);
+        emit(line);
+    }
+    if (reg_get_str(path, L"Order", v, (int)sizeof(v)) == 0) {
+        snprintf(line, sizeof(line), "      Order = %s", v);
+        emit(line);
+    }
+}
+
+/* 把 USB/ADB 的注册表现状逐行交出去。
+ * 这一份是判断「ADB1: 为什么打不开」的根：驱动没注册 = 错误 55 的由来。 */
+void adbio_ce_dump_usb_state(void (*emit)(const char *line))
+{
+    static char devs[1024];
+    char line[1100];
+
+    if (!emit) return;
+
+    emit("   ── ADB 驱动注册表（HKLM\\Drivers\\USB）──");
+    report_key(emit, "ClientDrivers", L"Drivers\\USB\\ClientDrivers", 0);
+    report_key(emit, "ClientDrivers\\ADB_Class",
+               L"Drivers\\USB\\ClientDrivers\\ADB_Class", 1);
+    report_key(emit, "ClientDrivers\\ADB_Driver",
+               L"Drivers\\USB\\ClientDrivers\\ADB_Driver", 1);
+    report_key(emit, "LoadClients", L"Drivers\\USB\\LoadClients", 0);
+    report_key(emit, "LoadClients\\Default\\Default",
+               L"Drivers\\USB\\LoadClients\\Default\\Default", 0);
+    report_key(emit, "LoadClients\\..\\255_66_1",
+               L"Drivers\\USB\\LoadClients\\Default\\Default\\255_66_1", 0);
+    report_key(emit, "LoadClients\\..\\255_66_1\\ADB_Class",
+               L"Drivers\\USB\\LoadClients\\Default\\Default\\255_66_1\\ADB_Class", 1);
+
+    emit("   ── 已加载的设备名（HKLM\\Drivers\\Active）──");
+    devs[0] = 0;
+    if (adbio_ce_list_devices(devs, (int)sizeof(devs)) > 0) {
+        snprintf(line, sizeof(line), "   %s", devs);
+        emit(line);
+    } else {
+        emit("   （一个都读不到）");
+    }
+}
+
 int adbio_ce_open(WCHAR *out_name, int name_cap, char *reason, int reason_cap)
 {
     int i, o = 0;
     char t[256];
     DWORD last = 0;
 
-    adbio_ce_close();
     if (reason && reason_cap > 0) reason[0] = 0;
+
+    /* ⚠ 句柄黏住，不先关再开。
+     *   现场日志里出现了非常清楚的一段：
+     *     19.581 打开成功 → 握手失败 → 关闭
+     *     21.6 ~ 56.5  ADB1: 连续 18 次返回 110(ERROR_OPEN_FAILED)
+     *     58.576 又能打开了
+     *   也就是这个驱动的「关」是脏的，关一次要几十秒才缓过来；
+     *   而我们每 2 秒就给它来一轮开关，等于一直把它按在坏状态里。
+     *   能复用就复用。真需要重开时走 adbio_ce_reopen()。 */
+    if (g_h != INVALID_HANDLE_VALUE) {
+        if (out_name && name_cap > 0)
+            w_copy(out_name, g_name, name_cap);
+        if (reason && reason_cap > 0)
+            sprintf(reason, "复用已打开的 ADB 设备 %ls", g_name);
+        return 0;
+    }
+
+    g_fatal = 0;
 
     for (i = 0; i < (int)(sizeof(g_cands) / sizeof(g_cands[0])); i++) {
         HANDLE h = CreateFileW(g_cands[i], GENERIC_READ | GENERIC_WRITE,
@@ -105,6 +312,7 @@ int adbio_ce_open(WCHAR *out_name, int name_cap, char *reason, int reason_cap)
         }
         if (h != INVALID_HANDLE_VALUE) {
             g_h = h;
+            g_err_run = 0;
             w_copy(g_name, g_cands[i], 64);
             if (out_name && name_cap > 0)
                 w_copy(out_name, g_cands[i], name_cap);
@@ -113,8 +321,12 @@ int adbio_ce_open(WCHAR *out_name, int name_cap, char *reason, int reason_cap)
             return 0;
         }
         last = GetLastError();
-        o += snprintf(t, sizeof(t) - o > 0 ? sizeof(t) - o : 0,
-                      "%ls(错误%lu) ", g_cands[i], (unsigned long)last);
+        {
+            int left = (int)sizeof(t) - o;
+            if (left <= 0) break;
+            o += snprintf(t + o, (size_t)left, "%ls(错误%lu) ",
+                          g_cands[i], (unsigned long)last);
+        }
     }
 
     if (reason && reason_cap > 0) {
@@ -132,6 +344,13 @@ void adbio_ce_close(void)
         g_h = INVALID_HANDLE_VALUE;
     }
     g_name[0] = 0;
+    g_err_run = 0;
+    g_fatal = 0;
+}
+
+void adbio_ce_reopen(void)
+{
+    adbio_ce_close();
 }
 
 /* 把 HKLM\Drivers\Active 里所有已加载的设备名列出来。
