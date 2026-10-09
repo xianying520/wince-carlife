@@ -425,7 +425,7 @@ int cl_log_open(void)
             int  p2 = 0, k;
             static const char *const h1 =
                 "================================================\r\n"
-                " CarLife 车机端 · 运行日志\r\n"
+                " XianyCar+互联 · 运行日志\r\n"
                 " 日志文件: ";
             static const char *const h2 =
                 "\r\n"
