@@ -83,6 +83,11 @@ static int      g_trunc_warn = 0;   /* 视频帧被收帧缓冲截断，已经�
  * 见 WinMain 里那一段等待：不等就直接写，那几行会被静默丢掉。 */
 static volatile int g_log_ready = 0;
 
+/* 主线程的界面初始化走到第几步（0=还没开始 1=建字体中 2=字体好了 3=画界面中 4=画完）。
+ * ⚠ 这是一份【不依赖日志】的兜底记录：万一主线程那几行日志因为任何原因丢了，
+ *   会话线程在开始连接之前把它的值写进日志，仍然能告诉我们界面走到哪一步了。 */
+static volatile int g_boot_step = 0;
+
 /* 把"不是 JPEG"的帧存到 U 盘上，让用户带回来。
  * 为什么必须做：手机推的到底是 JPEG 还是 H.264，决定我们要不要移植一个
  * H.264 解码器 —— 这是整个项目剩下的最大未知数。而只要头几个字节就能
@@ -749,11 +754,6 @@ static DWORD WINAPI session_thread(LPVOID param)
      *   放在这个线程里，它卡住也只是连接跑不起来，屏幕照样是活的。 */
     if (cl_log_open() != 0)
         set_status(L"日志文件建不出来，程序继续跑（但出问题就没日志可查）");
-    /* 告诉主线程「日志已可用」—— 它下面要往日志里写界面初始化的分步记录，
-     * 不等这一下的话，那几行会因为 g_h 还没打开而被直接丢掉，
-     * 恰好丢掉最关键的那几行。 */
-    g_log_ready = 1;
-
     cl_log("──────── 启动自检 ────────");
     cl_log("第1步 窗口已显示、界面已就绪（主线程，全程不碰文件）");
     cl_log("第2步 日志已打开");
@@ -761,6 +761,15 @@ static DWORD WINAPI session_thread(LPVOID param)
     cl_log("   屏幕 %dx%d, 等手机 %d 秒",
            GetSystemMetrics(SM_CXSCREEN), GetSystemMetrics(SM_CYSCREEN), WAIT_SECS);
     cl_log_sync();
+
+    /* ⚠⚠ 到这里【才】告诉主线程「日志可用」。
+     *
+     *   原来是在 cl_log_open 一成功就置位，结果主线程立刻开始写
+     *   「界面 0/4…」，正好和上面这段启动日志撞在同一时刻 ——
+     *   两个线程同时写同一个文件句柄，实测就是在那一下闪退的。
+     *   挪到这里之后，启动日志先安安静静写完，主线程才开始写，
+     *   两边在时间上错开。 */
+    g_log_ready = 1;
 
     /* 把日志路径显示到屏幕上 —— 用户得知道去哪儿拿这个文件。
      * 日志现在优先写车机内部存储（不再写 U 盘），所以这一行尤其重要。 */
@@ -793,6 +802,9 @@ static DWORD WINAPI session_thread(LPVOID param)
     }
     cl_log_sync();
 
+    /* ⚠ 把主线程的界面进度写进日志 —— 这是日志之外的兜底：
+     *   万一主线程那几行日志丢了，这一行仍然能说明界面走到第几步。 */
+    cl_log("启动前状态: 主线程界面进度 = %d/4", (int)g_boot_step);
     cl_log("──────── 自检结束，开始连接 ────────");
 
     for (;;) {
@@ -1238,31 +1250,32 @@ int WINAPI WinMain(HINSTANCE hi, HINSTANCE hp, LPWSTR cmdline, int show)
             set_status(L"线程创建失败：车机资源不足，请重启车机后再试");
         }
     }
-    /* ⚠ 等会话线程把日志打开（最多 3 秒）。
-     *   不等的话，下面这几行会因为 g_h 还没打开而被静默丢掉 ——
-     *   而它们正是"界面崩在第几步"的唯一线索。 */
+    /* ⚠ 等会话线程把启动日志写完（最多 5 秒）。
+     *   不等的话：① 那几行会因为句柄还没打开被静默丢掉（恰好丢掉最关键的线索）；
+     *             ② 更重要的是会和会话线程在同一时刻抢着写同一个文件。 */
     {
         int k;
-        for (k = 0; k < 30 && !g_log_ready; k++)
+        for (k = 0; k < 50 && !g_log_ready; k++)
             Sleep(100);
-        cl_log("界面 0/4 日志已就绪（等了 %d 毫秒）", k * 100);
-        cl_log_sync();
     }
-
+    g_boot_step = 1;
     cl_log("界面 1/4 开始建字体（CreateFontIndirectW ×5）");
     cl_log_sync();   /* ⚠ 每一步之后都强制刷盘：万一下一步就崩，
                       *   这一行必须已经在盘上，否则日志等于白记。 */
     ui_init(g_hwnd);
+    g_boot_step = 2;
     cl_log("界面 2/4 字体和画刷已建好");
     cl_log_sync();
     sync_button_labels();
     ui_headline(L"用 USB 线把手机连到车机",
                 L"然后在手机上打开「USB 调试」并点「允许」");
     stage_set(0, UI_ST_ACTIVE, L"正在准备…");
+    g_boot_step = 3;
     cl_log("界面 3/4 开始画完整界面（已全部改用 FillRect 一类的验证过的 API）");
     cl_log_sync();
     InvalidateRect(g_hwnd, 0, FALSE);
     UpdateWindow(g_hwnd);            /* 现在才是新界面（走 ui_paint_connect）*/
+    g_boot_step = 4;
     cl_log("界面 4/4 完整界面绘制完成");
     cl_log_sync();
 
