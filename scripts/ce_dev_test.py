@@ -21,7 +21,8 @@ TIMEOUT = 60
 def main():
     cc = os.environ.get("CC", "gcc")
     cmd = [cc, "-O1", "-g", "-Wall", "-Ihost", "-Isrc",
-           "-o", BIN, SRC, "src/adbio_ce.c", "src/adb.c", "src/rsa.c", "-lpthread"]
+           "-o", BIN, SRC, "host/ceemu.c", "src/adbio_ce.c", "src/adb.c", "src/rsa.c",
+           "-lpthread"]
     print("  ── 编译 ──")
     r = subprocess.run(cmd, capture_output=True, text=True)
     if r.stderr.strip():
