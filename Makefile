@@ -4,7 +4,8 @@
 #   build/WinCE-CarLifeHU.exe     主程序骨架（只用 coredll）
 #   build/WinCE-NetProbe.exe      网络/解码器/握手 全探测（额外链 ws2）
 #   build/WinCE-CarLifeClient.exe 协议客户端：握手→视频初始化→收帧取证
-#   build/WinCE-CarLifeView.exe   ⭐ 最终程序：显示手机画面 + 触屏回传
+#   build/XianyCar+.exe          ⭐ 最终程序：显示手机画面 + 触屏回传
+#     （原名 WinCE-CarLifeView.exe —— 用户要求改成品牌名并去掉扩展名前的横杠）
 CROSS  ?= arm-mingw32ce-
 CC     := $(CROSS)gcc
 
@@ -31,7 +32,7 @@ NETLIB  ?= -lws2
 MAIN_EXE   := $(BUILD)/WinCE-CarLifeHU.exe
 PROBE_EXE  := $(BUILD)/WinCE-NetProbe.exe
 CLIENT_EXE := $(BUILD)/WinCE-CarLifeClient.exe
-VIEWER_EXE := $(BUILD)/WinCE-CarLifeView.exe
+VIEWER_EXE := $(BUILD)/XianyCar+.exe
 
 .PHONY: all main probe client viewer check clean
 
