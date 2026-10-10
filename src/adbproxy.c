@@ -898,6 +898,14 @@ int adbp_start(const char * const *services, int n_services,
         return -3;
     }
     g_own_device = 1;
+
+    /* ⚠ 如果这次是【新开的】设备句柄，说明旧连接已经不存在了 ——
+     *   必须让 ADB 层把「已连接」状态忘掉，重新走一遍完整握手。
+     *   反过来，句柄是复用的（车机上的常态：那个句柄关不掉，一直留着），
+     *   就绝不能重发 CNXN，只能回收通道。 */
+    if (adbio_ce_was_fresh())
+        adb_forget(&g_adb);
+
     return adbp_start_with_io(adbio_ce_io(), services, n_services,
                               local_ports, reason, reason_cap);
 }
