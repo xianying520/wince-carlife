@@ -38,6 +38,22 @@ static int            g_rxcap[ADB_MAX_CHAN];   /* 各自的容量 */
 static unsigned char *g_pay;                   /* 包体累积缓冲 */
 static int            g_paycap;
 
+/* 这条 ADB 连接是否已经握手过。
+ *
+ * ⚠⚠ 它【绝不能放在 ADB 结构里】。放进去就会变成「调用方必须先清零」的约定，
+ *   而只要有人（比如电脑上的联调程序）传进来一个没清零的栈变量，
+ *   读到的就是随机值 —— 于是 adb_connect 会随机走进「已连接」分支，
+ *   跳过握手、直接去开通道。CI 上就真的这么炸了：
+ *     假 adbd 收到的第一个包是 CLSE（不是 CNXN），
+ *     而程序自己报 MAXDATA=1413568073 = 0x54415649 = "IVAT"……
+ *     那是把 "CNXN" 的字节当成了 maxdata —— 结构里的垃圾。
+ *   放到文件级之后就没有这个约定了：ADB 结构怎么来的都无所谓。
+ *
+ * 为什么需要这个标记：车机上那个设备句柄【关不掉】（读线程阻塞在 ReadFile 里），
+ * 所以改成整机只开一次、连接一直留着。既然还连着，就绝不能再发一次 CNXN ——
+ * 那会把对端整条连接重置掉。新一轮开始时只回收通道即可。 */
+static int g_connected;
+
 /* ── 小端打包 / 解包（ADB 全部小端，别和 CarLife 的大端搞混）── */
 static void put_le32(unsigned char *p, unsigned int v)
 {
@@ -325,7 +341,7 @@ void adb_forget(ADB *a)
 {
     if (!a) return;
     free_chans(a);
-    a->connected = 0;
+    g_connected  = 0;
     a->hdr_have  = 0;
     a->pay_need  = 0;
     a->pay_have  = 0;
@@ -377,7 +393,7 @@ int adb_connect(ADB *a, ADB_IO io)
      * 既然还连着，就【绝对不能再发一次 CNXN】—— 对端收到会把它当成新连接，
      * 把整条传输重置掉。这时候该做的只有一件事：把上一轮留下的通道收干净，
      * 然后直接接着用。 */
-    if (a->connected) {
+    if (g_connected) {
         int i;
         a->io = io;
         for (i = 0; i < ADB_MAX_CHAN; i++) {
@@ -432,7 +448,7 @@ int adb_connect(ADB *a, ADB_IO io)
             /* 对端在自己 CNXN 的 arg0 里给出它接受的最大载荷，取小者 */
             if (a0 != 0 && a0 < a->maxdata)
                 a->maxdata = a0;
-            a->connected = 1;                  /* 记住：这条连接已经握手过了 */
+            g_connected = 1;                   /* 记住：这条连接已经握手过了 */
             tr("握手完成 maxdata", a->maxdata, 0);
             return 0;
         }
