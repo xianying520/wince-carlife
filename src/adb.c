@@ -23,6 +23,21 @@ static void tr(const char *what, unsigned int a, unsigned int b)
     if (g_trace) g_trace(what, a, b);
 }
 
+/* ══ 接收缓冲（文件级，不放进 ADB 结构里）══════════════════════════════════
+ *
+ * ⚠ 为什么放在这儿而不是 ADB 结构里：ADB 会被调用方 memset，
+ *   而 memset 会把里面的指针冲掉 —— 那块内存再也找不回来（泄漏），
+ *   更糟的是「清零之前先 free」这种写法遇到未初始化的结构就是 free 野指针。
+ *   电脑上的 host 联调程序正是踩了这个（退出码 -11）。
+ *   放在文件级之后，ADB 结构里一个指针都没有，memset 怎么用都安全。
+ *
+ * 代价：整个进程只支持【一条 ADB 连接】。本项目就是一条（车机上 g_adb），
+ *       电脑上的联调程序也是一次一条，所以这个限制没问题 —— 但要知道。 */
+static unsigned char *g_rx[ADB_MAX_CHAN];      /* 每条通道的接收缓冲 */
+static int            g_rxcap[ADB_MAX_CHAN];   /* 各自的容量 */
+static unsigned char *g_pay;                   /* 包体累积缓冲 */
+static int            g_paycap;
+
 /* ── 小端打包 / 解包（ADB 全部小端，别和 CarLife 的大端搞混）── */
 static void put_le32(unsigned char *p, unsigned int v)
 {
@@ -183,21 +198,6 @@ static int b64_encode(const unsigned char *in, int n, char *out, int cap)
     out[o] = 0;
     return o;
 }
-
-/* ══ 接收缓冲（文件级，不放进 ADB 结构里）══════════════════════════════════
- *
- * ⚠ 为什么放在这儿而不是 ADB 结构里：ADB 会被调用方 memset，
- *   而 memset 会把里面的指针冲掉 —— 那块内存再也找不回来（泄漏），
- *   更糟的是「清零之前先 free」这种写法遇到未初始化的结构就是 free 野指针。
- *   电脑上的 host 联调程序正是踩了这个（退出码 -11）。
- *   放在文件级之后，ADB 结构里一个指针都没有，memset 怎么用都安全。
- *
- * 代价：整个进程只支持【一条 ADB 连接】。本项目就是一条（车机上 g_adb），
- *       电脑上的联调程序也是一次一条，所以这个限制没问题 —— 但要知道。 */
-static unsigned char *g_rx[ADB_MAX_CHAN];      /* 每条通道的接收缓冲 */
-static int            g_rxcap[ADB_MAX_CHAN];   /* 各自的容量 */
-static unsigned char *g_pay;                   /* 包体累积缓冲 */
-static int            g_paycap;
 
 /* ── 通道缓冲 ── */
 static int chan_append(ADB *a, int idx, const unsigned char *d, int n)
