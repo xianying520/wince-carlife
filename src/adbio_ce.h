@@ -64,4 +64,12 @@ void adbio_ce_stats(unsigned long *in_bytes, unsigned long *out_bytes,
 /* 把上面那组计数清零（每轮开始时调一次，这样统计的是「这一轮」）。 */
 void adbio_ce_stats_reset(void);
 
+/* 读线程环形缓冲的水位（诊断用）。
+ * used = 现在缓冲里还有多少字节没被取走；cap = 容量；drops = 因为满而丢过几次。
+ * 现场判断「读线程跟不跟得上」就看这几个数。 */
+void adbio_ce_ring(int *used, int *cap, unsigned long *drops);
+
+/* 读线程还活着吗（0 = 还没起 / 已经退出） */
+int  adbio_ce_reader_alive(void);
+
 #endif
