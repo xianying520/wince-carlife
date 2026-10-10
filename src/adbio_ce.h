@@ -72,4 +72,16 @@ void adbio_ce_ring(int *used, int *cap, unsigned long *drops);
 /* 读线程还活着吗（0 = 还没起 / 已经退出） */
 int  adbio_ce_reader_alive(void);
 
+/* 「上一次 adbio_ce_open 是不是真的新开了一个句柄」——
+ * 读一次就清零。用来判断「旧的 ADB 连接还算不算数」：
+ * 换了新句柄 = 旧连接已经没了，必须重新握手；复用旧句柄 = 连接还活着。 */
+int  adbio_ce_was_fresh(void);
+
+/* 读线程侧的统计：设备到底吐了多少字节、读了几次、单次最大多少。
+ * 这三个数和 adbio_ce_stats 里的「收到 N 字节」对不上时，
+ * 就说明「设备在吐数据，但我们的协议层根本没在消费」——
+ * 上一版程序卡死时就是这个形态（设备吐满 512KB，协议层只取了 24 字节）。 */
+void adbio_ce_reader_stats(unsigned long *bytes, unsigned long *reads,
+                           unsigned long *maxone);
+
 #endif
