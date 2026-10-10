@@ -128,21 +128,21 @@ static int recv_msg(ADB *a, unsigned int *cmd, unsigned int *a0,
 
 payload:
     if (a->pay_need > 0) {
-        if (a->pay_cap < a->pay_need) {
-            unsigned char *nb = (unsigned char *)realloc(a->pay,
+        if (g_paycap < a->pay_need) {
+            unsigned char *nb = (unsigned char *)realloc(g_pay,
                                                          (size_t)a->pay_need);
             if (!nb) { a->pay_need = 0; a->pay_have = 0; return -1; }
-            a->pay     = nb;
-            a->pay_cap = a->pay_need;
+            g_pay    = nb;
+            g_paycap = a->pay_need;
         }
         while (a->pay_have < a->pay_need) {
-            r = a->io.read(a->io.ctx, a->pay + a->pay_have,
+            r = a->io.read(a->io.ctx, g_pay + a->pay_have,
                            a->pay_need - a->pay_have, timeout_ms);
             if (r == 0) return 0;              /* 超时：进度留着，下次接着收 */
             if (r < 0)  { a->pay_need = 0; a->pay_have = 0; return -1; }
             a->pay_have += r;
         }
-        memcpy(data, a->pay, (size_t)a->pay_need);
+        memcpy(data, g_pay, (size_t)a->pay_need);
         *len = a->pay_need;
         a->pay_need = 0;
         a->pay_have = 0;
@@ -184,40 +184,61 @@ static int b64_encode(const unsigned char *in, int n, char *out, int cap)
     return o;
 }
 
+/* ══ 接收缓冲（文件级，不放进 ADB 结构里）══════════════════════════════════
+ *
+ * ⚠ 为什么放在这儿而不是 ADB 结构里：ADB 会被调用方 memset，
+ *   而 memset 会把里面的指针冲掉 —— 那块内存再也找不回来（泄漏），
+ *   更糟的是「清零之前先 free」这种写法遇到未初始化的结构就是 free 野指针。
+ *   电脑上的 host 联调程序正是踩了这个（退出码 -11）。
+ *   放在文件级之后，ADB 结构里一个指针都没有，memset 怎么用都安全。
+ *
+ * 代价：整个进程只支持【一条 ADB 连接】。本项目就是一条（车机上 g_adb），
+ *       电脑上的联调程序也是一次一条，所以这个限制没问题 —— 但要知道。 */
+static unsigned char *g_rx[ADB_MAX_CHAN];      /* 每条通道的接收缓冲 */
+static int            g_rxcap[ADB_MAX_CHAN];   /* 各自的容量 */
+static unsigned char *g_pay;                   /* 包体累积缓冲 */
+static int            g_paycap;
+
 /* ── 通道缓冲 ── */
-static int chan_append(ADB_CHAN *c, const unsigned char *d, int n)
+static int chan_append(ADB *a, int idx, const unsigned char *d, int n)
 {
+    ADB_CHAN *c = &a->ch[idx];
+
     if (n <= 0) return 0;
 
     /* 先把已取走的部分丢掉，腾出空间 */
     if (c->rx_head > 0) {
-        memmove(c->rx, c->rx + c->rx_head, (size_t)(c->rx_len - c->rx_head));
+        memmove(g_rx[idx], g_rx[idx] + c->rx_head,
+                (size_t)(c->rx_len - c->rx_head));
         c->rx_len -= c->rx_head;
         c->rx_head = 0;
     }
 
-    if (c->rx_len + n > c->rx_cap) {
-        int ncap = c->rx_cap ? c->rx_cap : 65536;
+    if (c->rx_len + n > g_rxcap[idx]) {
+        int ncap = g_rxcap[idx] ? g_rxcap[idx] : 65536;
         unsigned char *nb;
         while (ncap < c->rx_len + n)
             ncap *= 2;
-        nb = (unsigned char *)realloc(c->rx, (size_t)ncap);
+        nb = (unsigned char *)realloc(g_rx[idx], (size_t)ncap);
         if (!nb) return -1;
-        c->rx = nb;
-        c->rx_cap = ncap;
+        g_rx[idx]  = nb;
+        g_rxcap[idx] = ncap;
     }
-    memcpy(c->rx + c->rx_len, d, (size_t)n);
+    memcpy(g_rx[idx] + c->rx_len, d, (size_t)n);
     c->rx_len += n;
     return 0;
 }
 
-static ADB_CHAN *chan_by_local(ADB *a, unsigned int local_id)
+/* 返回通道下标；找不到返回 -1。
+ * （以前返回指针，现在改成下标 —— 因为接收缓冲不在结构里了，
+ *   要拿缓冲必须同时有下标。） */
+static int chan_by_local(ADB *a, unsigned int local_id)
 {
     if (local_id < 1 || local_id > ADB_MAX_CHAN)
-        return 0;
+        return -1;
     if (!a->ch[local_id - 1].used)
-        return 0;
-    return &a->ch[local_id - 1];
+        return -1;
+    return (int)(local_id - 1);
 }
 
 /* 处理一个已经收到的包。返回 0 正常，<0 致命。 */
@@ -227,9 +248,9 @@ static int handle_msg(ADB *a, unsigned int cmd, unsigned int a0,
     switch (cmd) {
     case ADB_WRTE: {
         /* arg0 = 对端在这条通道上的 id，arg1 = 我们的 id */
-        ADB_CHAN *c = chan_by_local(a, a1);
-        if (c)
-            chan_append(c, data, len);
+        int ci = chan_by_local(a, a1);
+        if (ci >= 0)
+            chan_append(a, ci, data, len);
         /* 收到就必须回 OKAY，否则对端不会再发 —— ADB 是严格应答式的。
          * ⚠ 应答里的 arg0 直接用收到的 a0，不要用 c->remote_id：
          *   在 OPEN 刚发出、OKAY 还没回来的那段时间里 remote_id 还没有值，
@@ -239,7 +260,8 @@ static int handle_msg(ADB *a, unsigned int cmd, unsigned int a0,
         return 0;
     }
     case ADB_CLSE: {
-        ADB_CHAN *c = chan_by_local(a, a1);
+        int ci = chan_by_local(a, a1);
+        ADB_CHAN *c = (ci >= 0) ? &a->ch[ci] : 0;
         if (c && c->closed) {
             /* 这条已经关过了，说明收到的是对方的"关闭确认"，不能再回一个 ——
              * 两边都无脑回确认会变成互相来回打不完的 CLSE。 */
@@ -290,10 +312,11 @@ static void free_chans(ADB *a)
 {
     int i;
     for (i = 0; i < ADB_MAX_CHAN; i++) {
-        if (a->ch[i].rx) {
-            free(a->ch[i].rx);
-            a->ch[i].rx = 0;
+        if (g_rx[i]) {
+            free(g_rx[i]);
+            g_rx[i] = 0;
         }
+        g_rxcap[i] = 0;
         memset(&a->ch[i], 0, sizeof(a->ch[i]));
     }
 }
@@ -369,14 +392,10 @@ int adb_connect(ADB *a, ADB_IO io)
         return 0;
     }
 
-    /* ⚠ 先把上一轮剩下的包体缓冲还掉，再清零。
-     *   顺序反了的话，memset 会把那个指针冲掉 —— 那块内存再也找不回来，
-     *   而且每次重连都漏一块（open_transport 最多会重连 60 次）。 */
-    if (a->pay) {
-        free(a->pay);
-        a->pay = 0;
-    }
+    /* 缓冲都在文件级（g_rx / g_pay），先还给它们，再把结构清零。
+     * 顺序随意 —— 结构里一个指针都没有，memset 不会造成任何泄漏。 */
     free_chans(a);
+    if (g_pay) { free(g_pay); g_pay = 0; g_paycap = 0; }
     memset(a, 0, sizeof(*a));
     a->io = io;
     a->maxdata = ADB_MAXDATA_REQ;
@@ -529,7 +548,7 @@ int adb_open(ADB *a, const char *service)
 
         if (cmd == ADB_OKAY && a1 == (unsigned int)local_id) {
             /* 通道在发 OPEN 时就占好了，这里只补上对端的通道号 ——
-             * 期间可能已经有数据存进 c->rx 了，绝不能 memset 清掉。 */
+             * 期间可能已经有数据存进该通道的接收缓冲了，绝不能 memset 清掉。 */
             a->ch[idx].remote_id = (int)a0;
             return local_id;
         }
@@ -749,7 +768,8 @@ int adb_close_chan(ADB *a, int chan)
         send_msg(a, ADB_CLSE, (unsigned int)chan,
                  (unsigned int)c->remote_id, 0, 0);
 
-    if (c->rx) free(c->rx);
+    if (g_rx[chan - 1]) { free(g_rx[chan - 1]); g_rx[chan - 1] = 0; }
+    g_rxcap[chan - 1] = 0;
     memset(c, 0, sizeof(*c));
     return 0;
 }
@@ -772,7 +792,7 @@ int adb_recv(ADB *a, int chan, unsigned char *out, int cap)
         return 0;
 
     n = avail < cap ? avail : cap;
-    memcpy(out, c->rx + c->rx_head, (size_t)n);
+    memcpy(out, g_rx[chan - 1] + c->rx_head, (size_t)n);
     c->rx_head += n;
     return n;
 }
