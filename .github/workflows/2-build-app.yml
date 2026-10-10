@@ -119,6 +119,14 @@ jobs:
         run: |
           python3 scripts/adb_test.py
 
+      - name: 验证设备层（真实 adbio_ce.c + 假车机 ADB 驱动）
+        run: |
+          # ⚠ 这一步是「别再拿车当测试机」的关键。
+          #   过去四趟车的 bug 全在 ADB/设备这一层，而它们在电脑上跑一遍就能发现。
+          #   假驱动照实现场行为：ReadFile 阻塞且无视超时、
+          #   WriteFile 可能写 0 字节、CloseHandle 碰上正在读的句柄不立刻生效。
+          python3 scripts/ce_dev_test.py
+
       - name: 验证 ADB 模块能为 ARM/WinCE 编译
         run: |
           export PATH="$HOME/tc/cegcc/bin:$PATH"
