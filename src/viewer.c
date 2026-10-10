@@ -1025,15 +1025,28 @@ static DWORD WINAPI session_thread(LPVOID param)
             int  ru = 0, rc = 0;
             unsigned long rd = 0;
 
+            unsigned long rbytes = 0, rreads = 0, rmax = 0;
+
             adbio_ce_stats(&ib, &ob, &re, &we, &nd, &le);
             adbio_ce_ring(&ru, &rc, &rd);
-            cl_log("   上一轮设备统计: 收到 %lu 字节 / 发出 %lu 字节 / "
+            adbio_ce_reader_stats(&rbytes, &rreads, &rmax);
+
+            cl_log("   上一轮设备统计: 协议层收到 %lu 字节 / 发出 %lu 字节 / "
                    "读失败 %lu 次 / 写失败 %lu 次 / 空读 %lu 次 / 末次错误 %lu",
                    ib, ob, re, we, nd, le);
-            /* 「读线程还活着吗」+ 环形缓冲水位：
-             * 这两个数一出来，就能立刻分清「设备不行了」和「我们自己的读线程没了」 */
-            cl_log("   读线程 %s，环形缓冲还剩 %d 字节（容量 %d），缓冲满丢过 %lu 次",
-                   adbio_ce_reader_alive() ? "活着" : "已退出", ru, rc, rd);
+            /* ⚠ 「读线程读到多少」和「协议层收到多少」必须【分开报】。
+             *   上一版把它们混在一起，于是现场看到的是「收到 24 字节」，
+             *   完全看不出设备其实吐了 512KB 把环形缓冲塞满了 ——
+             *   而正是那 512KB 触发了后来 1200 秒的死锁。
+             *   两个数差得越大，就越说明「设备在吐，我们没在消费」。 */
+            cl_log("   读线程 %s：设备侧共读到 %lu 字节 / 读了 %lu 次 / "
+                   "单次最多 %lu 字节",
+                   adbio_ce_reader_alive() ? "活着" : "已退出",
+                   rbytes, rreads, rmax);
+            cl_log("   环形缓冲：还剩 %d 字节（容量 %d），缓冲满丢过 %lu 次%s",
+                   ru, rc, rd,
+                   (rbytes > 1024 && ib < rbytes / 8)
+                     ? "  ← 注意：设备在吐数据但协议层几乎没消费" : "");
             adbio_ce_stats_reset();
         }
         adbio_ce_dump_usb_state(cl_log_line);
