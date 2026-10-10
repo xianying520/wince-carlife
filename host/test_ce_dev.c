@@ -98,6 +98,15 @@ int main(void)
     ce_set_fd(sv[1]);
     ce_set_present(1);
 
+    /* ⚠ 这个 pthread_create 一开始漏写了 —— 结果「对端收到字节」那项永远失败，
+     *   因为压根没有线程在对端收。测试代码自己也要有人审。 */
+    g_peer_run = 1;
+    {
+        pthread_t th;
+        pthread_create(&th, NULL, peer_fn, NULL);
+        pthread_detach(th);
+    }
+
     /* ── 1) 打开设备 ── */
     n = adbio_ce_open(nm, 64, reason, (int)sizeof(reason));
     check("打开 ADB1: 成功", n == 0, n == 0 ? "" : reason);
@@ -124,7 +133,14 @@ int main(void)
     g_peer_sent += 9;
     t0 = GetTickCount();
     n = io.read(io.ctx, buf, 64, 2000);
-    check("能收到设备送来的数据", (n == 9 && memcmp(buf, "hello-car", 9) == 0), "");
+    {
+        unsigned long rb = 0, rr = 0, rmax = 0;
+        char e[160];
+        adbio_ce_reader_stats(&rb, &rr, &rmax);
+        snprintf(e, sizeof(e), "read 返回 %d，设备侧累计已读 %lu 字节 / %lu 次",
+                 n, rb, rr);
+        check("能收到设备送来的数据", (n == 9 && memcmp(buf, "hello-car", 9) == 0), e);
+    }
     if (n > 0) {
         char e[64];
         snprintf(e, sizeof(e), "延迟 %d 毫秒", (int)(GetTickCount() - t0));
@@ -135,7 +151,11 @@ int main(void)
      *     现场那句「写失败 0 次却每次秒退 -1」就是这么来的。 */
     ce_set_zero_write(3);                       /* 前 3 次只写 0 字节 */
     n = io.write(io.ctx, (const unsigned char *)"ping-1234", 9);
-    check("设备暂时写不进时，会重试到写下去（不是立刻失败）", n == 9, "");
+    {
+        char e[64];
+        snprintf(e, sizeof(e), "write 返回 %d", n);
+        check("设备暂时写不进时，会重试到写下去（不是立刻失败）", n == 9, e);
+    }
     {
         long before = g_peer_got;
         for (d = 0; d < 50 && g_peer_got == before; d++) Sleep(20);
