@@ -63,11 +63,14 @@ static volatile int      g_rhead;
 static volatile int      g_rstop;           /* 让读线程退出 */
 static volatile int      g_rdead;           /* 读线程已经退出 */
 static volatile int      g_rdrop;           /* 因为缓冲满丢过的次数 */
-static volatile int      g_pending_close;   /* 读线程还卡在 ReadFile，句柄交给它关 */
-/* ⚠ 读线程【只】用这个句柄。绝不能让它去用 g_h ——
- *   延迟关闭那条路径上，g_h 可能已经被换成了下一轮的新句柄，
- *   那种时候线程一 CloseHandle 就把【新】句柄关掉了，后果极难查。 */
-static HANDLE            g_rh = INVALID_HANDLE_VALUE;
+/* 外面已经放弃等读线程、句柄交给它自己关（见 adbio_ce_close 的说明） */
+static volatile int      g_close_on_exit;
+/* 上一次 open 是不是真的新开了句柄（读一次即清零） */
+static volatile int      g_opened_fresh;
+/* 读线程侧的诊断计数：只有它能回答「设备到底在吐什么」 */
+static unsigned long     g_rbytes;         /* 读线程累计读到的字节 */
+static unsigned long     g_rreads;         /* 读线程 ReadFile 成功返回的次数 */
+static unsigned long     g_rmax;           /* 单次读到的最大字节数 */
 static HANDLE            g_rthr;
 static DWORD             g_rtid;
 static HANDLE            g_rev;             /* 有数据时置位（自动复位） */
@@ -115,31 +118,49 @@ static int ring_get(unsigned char *out, int cap)
 
 static void ring_put(const unsigned char *d, int n)
 {
-    int i = 0;
-    while (i < n) {
-        int free_, chunk;
-        EnterCriticalSection(&g_rlock);
-        free_  = RCAP - g_rlen;
-        chunk  = n - i;
-        if (chunk > free_) chunk = free_;
-        if (chunk > 0) {
-            int tail  = (g_rhead + g_rlen) % RCAP;
-            int first = RCAP - tail;
-            if (first > chunk) first = chunk;
-            memcpy(g_rbuf + tail, d + i, (size_t)first);
-            if (chunk > first)
-                memcpy(g_rbuf, d + i + first, (size_t)(chunk - first));
-            g_rlen += chunk;
-        }
-        LeaveCriticalSection(&g_rlock);
+    int chunk;
 
-        if (chunk <= 0) {          /* 满了：等应用层取走 */
-            g_rdrop++;
-            Sleep(2);
-            continue;
-        }
-        i += chunk;
+    /* ⚠⚠ 满了就【丢】，绝不在这里等 —— 这是上一版把整个程序卡死的地方。
+     *
+     *   上一版写的是「满了就 Sleep(2) 再试」，也就是一个 while 死循环。
+     *   后果是连锁的，而且非常隐蔽：
+     *     读线程一旦进到这个循环，就【再也回不到外层】→ 永远看不到 g_rstop
+     *     → g_rdead 永远是 0 → 句柄永远收不了尾 → 下一轮永远开不了设备。
+     *   现场日志（carlife-log.txt）把它记得清清楚楚：
+     *     · 「环形缓冲还剩 524288 字节（容量 524288）」—— 一直满着
+     *     · 「缓冲满丢过 38068 次」一路涨到 393417 次，约 300 次/秒
+     *     · 从第 35 秒起，后面 1242 秒全是「上一个 ADB 句柄还在收尾」
+     *
+     *   丢数据是对的：这是一条我们跟不上的字节流，丢掉远好过卡死。
+     *   丢的时候【挤掉最老的】，保留最新的 —— 反正已经对不齐了，
+     *   留着新鲜的数据至少还能让协议层尽快重新同步。 */
+    if (n > RCAP) {                       /* 比缓冲还大：只留最后 RCAP 字节 */
+        d += (n - RCAP);
+        n  = RCAP;
     }
+
+    EnterCriticalSection(&g_rlock);
+
+    if (n > RCAP - g_rlen) {
+        int need = n - (RCAP - g_rlen);
+        g_rhead = (g_rhead + need) % RCAP;
+        g_rlen -= need;
+        g_rdrop++;
+    }
+    chunk = n;
+
+    if (chunk > 0) {
+        int tail  = (g_rhead + g_rlen) % RCAP;
+        int first = RCAP - tail;
+        if (first > chunk) first = chunk;
+        memcpy(g_rbuf + tail, d, (size_t)first);
+        if (chunk > first)
+            memcpy(g_rbuf, d + first, (size_t)(chunk - first));
+        g_rlen += chunk;
+    }
+
+    LeaveCriticalSection(&g_rlock);
+
     if (g_rev)
         SetEvent(g_rev);
 }
@@ -149,17 +170,28 @@ static void ring_put(const unsigned char *d, int n)
 static DWORD WINAPI reader_thread(LPVOID p)
 {
     unsigned char tmp[4096];
-    HANDLE        h = g_rh;            /* 本线程专用的句柄，中途不会被换掉 */
-    (void)p;
+    /* ⚠ 句柄是【按值传进来】的，不是去读全局变量。
+     *   这一点很关键：万一这个线程被丢下不管（它卡在 ReadFile 里出不来），
+     *   外面会去开一个新句柄；如果线程退出时读的是全局变量，
+     *   它就会把【新句柄】关掉。按值传参之后，它手里永远是它自己那一个。 */
+    HANDLE        h = (HANDLE)p;
 
     while (!g_rstop && h != INVALID_HANDLE_VALUE) {
         DWORD got = 0;
 
         if (ReadFile(h, tmp, (DWORD)sizeof(tmp), &got, NULL)) {
-            if (got > 0)
+            /* 防御一下：驱动万一回了个离谱的字节数，别把栈读穿 */
+            if (got > (DWORD)sizeof(tmp))
+                got = (DWORD)sizeof(tmp);
+            if (got > 0) {
+                g_rbytes += got;
+                g_rreads++;
+                if ((unsigned long)got > g_rmax)
+                    g_rmax = (unsigned long)got;
                 ring_put(tmp, (int)got);
-            else
+            } else {
                 Sleep(5);            /* 驱动是「非阻塞」的话走这里，别空转 */
+            }
         } else {
             DWORD e = GetLastError();
             g_last_err = e;
@@ -174,46 +206,31 @@ static DWORD WINAPI reader_thread(LPVOID p)
         }
     }
 
+    /* 只有「外面已经放弃等我们了」这种情况，才由我们负责关句柄 */
+    if (g_close_on_exit) {
+        if (h != INVALID_HANDLE_VALUE)
+            CloseHandle(h);
+        g_close_on_exit = 0;
+    }
+
     g_rdead = 1;
     if (g_rev)
         SetEvent(g_rev);             /* 叫醒还等在那儿的人 */
-
-    /* 外面在等我们退出、而且已经把逻辑句柄清掉了 —— 现在安全了，关掉它 */
-    if (g_pending_close) {
-        if (h != INVALID_HANDLE_VALUE)
-            CloseHandle(h);           /* 关的是【我这个】句柄 */
-        g_rh = INVALID_HANDLE_VALUE;
-        g_pending_close = 0;
-        g_rdead = 0;
-    }
+    /* ⚠ 这里【不要】动 g_rthr：线程句柄是内核对象，丢了就泄漏一个。
+     *   由 adbio_ce_close 统一 WaitForSingleObject + CloseHandle。 */
     return 0;
 }
 
 static void reader_start(void)
 {
     ring_reset();
-    g_rh = g_h;
     if (!g_rev)
         g_rev = CreateEventW(NULL, FALSE, FALSE, NULL);   /* 自动复位；失败也不致命 */
-    g_rstop = 0;
-    g_rdead = 0;
-    g_rthr  = CreateThread(NULL, 0, reader_thread, NULL, 0, &g_rtid);
-}
-
-/* 停读线程。⚠ 它可能正阻塞在 ReadFile 里（这台驱动就是这样），
- *   所以只能等一小会儿；等不到就【不关句柄】—— 关掉一个正在读的句柄
- *   是未定义行为，比泄漏句柄危险得多。让线程自己退出来时收尾。 */
-static void reader_stop(void)
-{
-    if (!g_rthr)
-        return;
-    g_rstop = 1;
-    if (WaitForSingleObject(g_rthr, 2000) == WAIT_OBJECT_0) {
-        CloseHandle(g_rthr);
-        g_rthr = 0;
-    } else {
-        g_rthr = 0;                  /* 交给线程自己收尾 */
-    }
+    g_rstop         = 0;
+    g_rdead         = 0;
+    g_close_on_exit = 0;
+    g_rbytes = 0; g_rreads = 0; g_rmax = 0;
+    g_rthr = CreateThread(NULL, 0, reader_thread, (LPVOID)g_h, 0, &g_rtid);
 }
 
 void adbio_ce_ring(int *used, int *cap, unsigned long *drops)
@@ -223,9 +240,24 @@ void adbio_ce_ring(int *used, int *cap, unsigned long *drops)
     if (drops) *drops = g_rdrop;
 }
 
+void adbio_ce_reader_stats(unsigned long *bytes, unsigned long *reads,
+                           unsigned long *maxone)
+{
+    if (bytes)  *bytes  = g_rbytes;
+    if (reads)  *reads  = g_rreads;
+    if (maxone) *maxone = g_rmax;
+}
+
 int adbio_ce_reader_alive(void)
 {
     return (g_rthr != 0 && !g_rdead);
+}
+
+int adbio_ce_was_fresh(void)
+{
+    int f = g_opened_fresh;
+    g_opened_fresh = 0;
+    return f;
 }
 
 /* 手写的宽字符串拷贝。
@@ -281,6 +313,10 @@ void adbio_ce_stats_reset(void)
     g_no_data = 0;
     g_last_err = 0;
     g_wr_zero = 0;
+    g_rbytes = 0;
+    g_rreads = 0;
+    g_rmax = 0;
+    g_rdrop = 0;
 }
 
 /* 读：只从环形缓冲取，【永远有界】。
@@ -478,24 +514,6 @@ int adbio_ce_open(WCHAR *out_name, int name_cap, char *reason, int reason_cap)
 
     if (reason && reason_cap > 0) reason[0] = 0;
 
-    /* ⚠⚠ 上一轮的读线程如果还卡在 ReadFile 里，它退出时会去关【它自己那个】
-     *   句柄（g_rh）。这本身是安全的，但这一轮若马上再开一个新句柄，
-     *   两者就会同时存在 —— 这个驱动很可能不接受（又会是错误 110 那一套）。
-     *   所以先等它收尾，等不到就如实报错，下一轮再来。 */
-    if (g_pending_close) {
-        int k;
-        for (k = 0; k < 50 && g_pending_close; k++)
-            Sleep(100);
-        if (g_pending_close) {
-            if (reason && reason_cap > 0) {
-                snprintf(reason, (size_t)reason_cap - 1,
-                         "上一个 ADB 句柄还在收尾（读线程未退出），本轮先跳过");
-                reason[reason_cap - 1] = 0;
-            }
-            return -1;
-        }
-    }
-
     /* ⚠ 句柄黏住，不先关再开。
      *   现场日志里出现了非常清楚的一段：
      *     19.581 打开成功 → 握手失败 → 关闭
@@ -544,6 +562,7 @@ int adbio_ce_open(WCHAR *out_name, int name_cap, char *reason, int reason_cap)
             /* 读线程从这里开始接管设备。注意 Sleep 要放在它后面：
              * 让线程先把「第一次阻塞读」发出去，我们再往下走。 */
             reader_start();
+            g_opened_fresh = 1;      /* 告诉上层：这是新句柄，旧连接不算数了 */
             /* 刚打开时给驱动一点时间把 USB 管道挂好。
              * 被 USB 枚举/管道建立挡掉第一包是这类驱动常见的小毛病，
              * 代价只有 150 毫秒，而且只在新开的那一次付。 */
@@ -573,32 +592,40 @@ int adbio_ce_open(WCHAR *out_name, int name_cap, char *reason, int reason_cap)
 
 void adbio_ce_close(void)
 {
-    /* ⚠ 顺序不能反：必须先让读线程退出，再关句柄。
-     *   读线程可能正阻塞在 ReadFile 里（这台驱动就是这样），
-     *   关掉一个正在被读的句柄是未定义行为。
-     *   reader_stop 只等 2 秒；等不到就把句柄交给线程自己收尾，
-     *   宁可暂时留着这个句柄，也不去做危险的动作。 */
-    if (g_rthr) {
-        reader_stop();
-        if (!g_rdead) {
-            /* 线程还卡在 ReadFile 里 —— 句柄先不关，标记成「待关」，
-             * 由线程退出时自己 CloseHandle，并在这里把逻辑句柄清掉。 */
-            g_pending_close = 1;
-        }
+    /* ⚠⚠ 决定「关不关」之前，先把上一版的教训写在这儿（就是它把程序卡死的）：
+     *
+     *   读线程是【阻塞】在 ReadFile 里的，我们没法把它叫停。
+     *   上一版遇到这种情况的处理是：「等它 2 秒，等不到就把句柄留给它，
+     *   并设一个『待收尾』标志，下一轮先跳过」。
+     *   结果是 —— 只要它一直卡着，这个标志就永远清不掉，
+     *   程序从那一刻起【再也打不开设备】，一直空转到用户退出。
+     *   现场日志：第 35 秒设上，之后 1242 秒里 308 次「本轮先跳过」。
+     *
+     *   现在的规则很短，而且不可能卡住：
+     *     · 读线程【还活着】 → 说明这个句柄是好的（它一直在读它），
+     *       那就【不关】：只把缓冲里的旧数据倒掉，句柄和线程都留着，
+     *       下一轮直接接着用。既没有卡死的可能，也省掉了开关设备的折腾。
+     *     · 读线程【已经退出】（设备拔了 / 出错了）→ 它手里没有等待中的读，
+     *       这时候 CloseHandle 是安全的，就真的关掉、清干净。
+     */
+    if (g_rthr && !g_rdead) {
+        ring_reset();
+        return;                 /* 句柄留着，g_name 也留着 */
     }
 
-    if (!g_pending_close) {
-        if (g_h != INVALID_HANDLE_VALUE)
-            CloseHandle(g_h);
-        g_h  = INVALID_HANDLE_VALUE;
-        g_rh = INVALID_HANDLE_VALUE;
-    } else {
-        g_h = INVALID_HANDLE_VALUE;    /* 逻辑上已关；真正的关闭交给读线程 */
-    }
-    g_rdead = 0;
     g_rstop = 1;
+    if (g_rthr) {
+        WaitForSingleObject(g_rthr, 1000);   /* 已经退出了，这里基本立刻返回 */
+        CloseHandle(g_rthr);
+        g_rthr = 0;
+    }
+    if (g_h != INVALID_HANDLE_VALUE) {
+        CloseHandle(g_h);
+        g_h = INVALID_HANDLE_VALUE;
+    }
     g_name[0] = 0;
     g_fatal = 0;
+    g_rdead = 0;
 }
 
 void adbio_ce_reopen(void)
