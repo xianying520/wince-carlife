@@ -268,13 +268,19 @@ static inline BOOL CloseHandle(HANDLE hd)
 }
 
 /* ══ 设备：一条 socket 就是那根 USB 线 ══════════════════════════════════
- * 测试程序负责把 socket 的另一头接到「假手机」上。 */
-static int   g_ce_fd        = -1;      /* 设备管道 */
-static int   g_ce_present   = 0;       /* 设备名在不在（55 / 110 用） */
-static long  g_ce_read_ms   = 0;       /* 驱动自己的读超时，0 = 永远阻塞 */
-static int   g_ce_zero_write = 0;      /* 非 0 = 先来几次「成功但写 0 字节」 */
-static long  g_ce_read_calls = 0;
-static long  g_ce_blocked_ms = 0;      /* 累计阻塞时长（诊断/断言用） */
+ * 测试程序负责把 socket 的另一头接到「假手机」上。
+ *
+ * ⚠⚠ 这几个变量必须是 extern，定义在 ceemu.c 里 ——【不能写成 static】。
+ *   写成 static 的话，每一个 .c 文件都会拿到自己独立的一份：
+ *   测试程序设的是它自己那份，而 adbio_ce.c 读的是它自己那份（永远是 0/-1），
+ *   于是「设备明明摆好了，打开却报 110」。
+ *   这个坑第一次跑 CI 就踩到了，记在这儿免得以后又改成 static。 */
+extern int   g_ce_fd;          /* 设备管道 */
+extern int   g_ce_present;     /* 设备名在不在（55 / 110 用） */
+extern long  g_ce_read_ms;     /* 驱动自己的读超时，0 = 永远阻塞 */
+extern int   g_ce_zero_write;  /* 非 0 = 先来几次「成功但写 0 字节」 */
+extern long  g_ce_read_calls;
+extern long  g_ce_blocked_ms;  /* 累计阻塞时长（诊断/断言用） */
 
 static inline void ce_set_fd(int fd)      { g_ce_fd = fd; }
 static inline void ce_set_present(int p)  { g_ce_present = p; }
