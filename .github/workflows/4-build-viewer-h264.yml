@@ -27,7 +27,7 @@ env:
 
 jobs:
   build:
-    name: 编 WinCE-CarLifeView.exe（含 H.264）
+    name: 编 XianyCar+.exe（含 H.264）
     runs-on: ubuntu-22.04
     steps:
       - uses: actions/checkout@v4
@@ -67,11 +67,11 @@ jobs:
 
       - name: 核对产物是 WinCE ARM PE
         run: |
-          python3 scripts/checkpe.py build/WinCE-CarLifeView.exe
+          python3 scripts/checkpe.py 'build/XianyCar+.exe'
           ls -l build/
           echo "── 确认 H.264 符号真的链进去了 ──"
           export PATH="$HOME/tc/cegcc/bin:$PATH"
-          arm-mingw32ce-nm build/WinCE-CarLifeView.exe | grep -c 'h264bsd' || true
+          arm-mingw32ce-nm 'build/XianyCar+.exe' | grep -c 'h264bsd' || true
 
       - name: 上传产物
         uses: actions/upload-artifact@v4
@@ -79,6 +79,6 @@ jobs:
           name: wince-viewer-h264
           # 两个都传：体检程序是用来二分定位的，和主程序同等重要
           path: |
-            build/WinCE-CarLifeView.exe
+            build/XianyCar+.exe
             build/WinCE-CarLifeCheck.exe
           if-no-files-found: error
