@@ -40,25 +40,6 @@ static unsigned int get_le32(const unsigned char *p)
          | ((unsigned int)p[3] << 24);
 }
 
-/* 一定要读满 len 字节 —— 流式设备一次读不全很正常。
- * 返回：len = 成功；0 = 超时；-1 = 出错或对端关闭。
- * ⚠ "超时"必须和"出错"分开：转发器是每 10 毫秒轮询一次的，
- *   如果超时也返回 -1，它会把"暂时没数据"误判成"设备挂了"，
- *   然后整个转发就停了 —— 这个坑必须避开。 */
-static int read_full(ADB *a, unsigned char *buf, int len, int timeout_ms)
-{
-    int got = 0;
-    while (got < len) {
-        int r = a->io.read(a->io.ctx, buf + got, len - got, timeout_ms);
-        if (r == 0)
-            return 0;                  /* 超时 */
-        if (r < 0)
-            return -1;                 /* 出错 */
-        got += r;
-    }
-    return got;
-}
-
 static int write_full(ADB *a, const unsigned char *buf, int len)
 {
     int put = 0;
@@ -92,26 +73,45 @@ static int send_msg(ADB *a, unsigned int cmd, unsigned int a0,
 }
 
 /* 收一个包。data 缓冲由调用者提供，容量 cap；实际长度写回 *len。
- * 载荷比 cap 大时算协议错（正常不会）。 */
+ * 载荷比 cap 大时算协议错（正常不会）。
+ *
+ * 返回：1 = 收到一个完整包；0 = 超时（进度【保留】，下次接着收）；<0 = 出错。
+ *
+ * ⚠⚠ 这里最要紧的一条：**超时时一个字节都不能丢**。
+ *   包很可能是分几次到的，而调用方（握手 / 开通道 / 跑命令）是
+ *   按「超时了就重试」来写的。如果超时才把已读到的半截包丢掉，
+ *   下次再读就从包的中间开始解 —— 整条流从此永久错位，
+ *   后面每一个包都会 magic 校验失败（-2）。
+ *   现场日志里 [11.495] 超时之后紧跟 [14.134]「读设备失败 (0x2)」，就是这个。 */
 static int recv_msg(ADB *a, unsigned int *cmd, unsigned int *a0,
                     unsigned int *a1, unsigned char *data, int cap,
                     int *len, int timeout_ms)
 {
-    unsigned char h[24];
     unsigned int dlen, magic;
-    int rr;
+    int r;
 
-    rr = read_full(a, h, 24, timeout_ms);
-    if (rr == 0)
-        return 0;                      /* 超时 */
-    if (rr < 0)
-        return -1;
+    /* 上次的包体还没收完 —— 绝不能回头去读包头，那是包体中间的字节 */
+    if (a->pay_need > 0) {
+        *cmd = a->pend_cmd;
+        *a0  = a->pend_a0;
+        *a1  = a->pend_a1;
+        goto payload;
+    }
 
-    *cmd  = get_le32(h +  0);
-    *a0   = get_le32(h +  4);
-    *a1   = get_le32(h +  8);
-    dlen  = get_le32(h + 12);
-    magic = get_le32(h + 20);
+    while (a->hdr_have < 24) {
+        r = a->io.read(a->io.ctx, a->hdr + a->hdr_have,
+                       24 - a->hdr_have, timeout_ms);
+        if (r == 0) return 0;                  /* 超时：进度留着 */
+        if (r < 0)  { a->hdr_have = 0; return -1; }
+        a->hdr_have += r;
+    }
+    a->hdr_have = 0;
+
+    *cmd  = get_le32(a->hdr +  0);
+    *a0   = get_le32(a->hdr +  4);
+    *a1   = get_le32(a->hdr +  8);
+    dlen  = get_le32(a->hdr + 12);
+    magic = get_le32(a->hdr + 20);
 
     /* magic 校验：能在很大程度上挡掉"设备其实没在说 ADB 协议"这种错，
      * 比如打开的是别的流驱动 —— 那种情况下会看到乱七八糟的字节。 */
@@ -120,13 +120,35 @@ static int recv_msg(ADB *a, unsigned int *cmd, unsigned int *a0,
     if ((int)dlen > cap)
         return -2;
 
-    if (dlen > 0) {
-        rr = read_full(a, data, (int)dlen, timeout_ms);
-        if (rr == 0) return 0;
-        if (rr < 0)  return -1;
-    }
+    a->pend_cmd = *cmd;
+    a->pend_a0  = *a0;
+    a->pend_a1  = *a1;
+    a->pay_need = (int)dlen;
+    a->pay_have = 0;
 
-    *len = (int)dlen;
+payload:
+    if (a->pay_need > 0) {
+        if (a->pay_cap < a->pay_need) {
+            unsigned char *nb = (unsigned char *)realloc(a->pay,
+                                                         (size_t)a->pay_need);
+            if (!nb) { a->pay_need = 0; a->pay_have = 0; return -1; }
+            a->pay     = nb;
+            a->pay_cap = a->pay_need;
+        }
+        while (a->pay_have < a->pay_need) {
+            r = a->io.read(a->io.ctx, a->pay + a->pay_have,
+                           a->pay_need - a->pay_have, timeout_ms);
+            if (r == 0) return 0;              /* 超时：进度留着，下次接着收 */
+            if (r < 0)  { a->pay_need = 0; a->pay_have = 0; return -1; }
+            a->pay_have += r;
+        }
+        memcpy(data, a->pay, (size_t)a->pay_need);
+        *len = a->pay_need;
+        a->pay_need = 0;
+        a->pay_have = 0;
+    } else {
+        *len = 0;
+    }
     return 1;                          /* 收到一个完整包 */
 }
 
@@ -261,6 +283,31 @@ static int wait_okay(ADB *a, unsigned int local_id, int timeout_ms)
     }
 }
 
+/* 释放通道表里所有接收缓冲并把表清零。
+ * ⚠ 以前各处直接 memset 整张表，缓冲指针就被冲掉了 —— 每次都漏一块内存，
+ *   而 open_transport 一轮最多会重连 60 次。 */
+static void free_chans(ADB *a)
+{
+    int i;
+    for (i = 0; i < ADB_MAX_CHAN; i++) {
+        if (a->ch[i].rx) {
+            free(a->ch[i].rx);
+            a->ch[i].rx = 0;
+        }
+        memset(&a->ch[i], 0, sizeof(a->ch[i]));
+    }
+}
+
+void adb_forget(ADB *a)
+{
+    if (!a) return;
+    free_chans(a);
+    a->connected = 0;
+    a->hdr_have  = 0;
+    a->pay_need  = 0;
+    a->pay_have  = 0;
+}
+
 static int send_rsa_public_key(ADB *a)
 {
     unsigned char blob[524];
@@ -299,6 +346,37 @@ int adb_connect(ADB *a, ADB_IO io)
     unsigned char buf[1024];
     int len, r, tries = 0;
 
+    /* ── 关键分支：设备句柄没换过，这条连接还活着 ──────────────────────
+     *
+     * 这正是车机上的常态：那个设备句柄【关不掉】（读线程阻塞在 ReadFile 里，
+     * 关一个正在被读的句柄是未定义行为），所以整机只开一次、连接一直留着。
+     *
+     * 既然还连着，就【绝对不能再发一次 CNXN】—— 对端收到会把它当成新连接，
+     * 把整条传输重置掉。这时候该做的只有一件事：把上一轮留下的通道收干净，
+     * 然后直接接着用。 */
+    if (a->connected) {
+        int i;
+        a->io = io;
+        for (i = 0; i < ADB_MAX_CHAN; i++) {
+            if (a->ch[i].used)
+                adb_close_chan(a, i + 1);      /* 礼貌地告诉对端：这条我不要了 */
+        }
+        adb_pump(a, 60);                        /* 顺手把对端的应答收一轮 */
+        free_chans(a);
+        a->hdr_have = 0;
+        a->pay_need = 0;
+        a->pay_have = 0;
+        return 0;
+    }
+
+    /* ⚠ 先把上一轮剩下的包体缓冲还掉，再清零。
+     *   顺序反了的话，memset 会把那个指针冲掉 —— 那块内存再也找不回来，
+     *   而且每次重连都漏一块（open_transport 最多会重连 60 次）。 */
+    if (a->pay) {
+        free(a->pay);
+        a->pay = 0;
+    }
+    free_chans(a);
     memset(a, 0, sizeof(*a));
     a->io = io;
     a->maxdata = ADB_MAXDATA_REQ;
@@ -318,7 +396,10 @@ int adb_connect(ADB *a, ADB_IO io)
          *   而每一轮尝试等得越短，同一个 120 秒的等待窗口里能重试的次数就越多 ——
          *   现场的真实情形是"用户手忙脚乱地开 USB 调试"，
          *   多试几次比一次等很久有用得多。 */
-        r = recv_msg(a, &cmd, &a0, &a1, buf, (int)sizeof(buf), &len, 3000);
+        /* 第一次等久一点：刚插上线时手机那边的 adbd 可能还没完全就绪，
+         * 之后每次就按 3 秒算 —— 应答正常是几毫秒，够用。 */
+        r = recv_msg(a, &cmd, &a0, &a1, buf, (int)sizeof(buf), &len,
+                     (tries == 0) ? 8000 : 3000);
         /* ⚠ 这里必须把「超时」和「读设备出错」分开报。
          *   以前两者都返回 -1，现场屏幕上只会看到「认证失败（错误 -1）」，
          *   完全分不清是「手机根本没理我们」还是「ADB 设备读不了」——
@@ -332,6 +413,7 @@ int adb_connect(ADB *a, ADB_IO io)
             /* 对端在自己 CNXN 的 arg0 里给出它接受的最大载荷，取小者 */
             if (a0 != 0 && a0 < a->maxdata)
                 a->maxdata = a0;
+            a->connected = 1;                  /* 记住：这条连接已经握手过了 */
             tr("握手完成 maxdata", a->maxdata, 0);
             return 0;
         }
