@@ -45,8 +45,14 @@ typedef struct {
     int  used;
     int  remote_id;
     char service[64];
-    unsigned char *rx;      /* 该通道的接收缓冲（按需增长） */
-    int  rx_cap;
+    /* ⚠ 这里【故意不放指针】。
+     *   「该通道的接收缓冲」以前是 unsigned char *rx，放在这个结构里 ——
+     *   于是调用方必须保证传进来的 ADB 已经清零过，否则重连时那句
+     *   free(c->rx) 就是 free() 一个野指针，直接段错误。
+     *   车机上的 g_adb 是静态变量（本来就是 0）所以没暴露，
+     *   但电脑上的 host 联调程序里 `ADB a;` 是栈上的 —— 一跑就 -11。
+     *   现在缓冲放在 adb.c 的文件级数组里（见 g_rx/g_rxcap），
+     *   整个 ADB 结构里一个指针都没有，memset 怎么用都安全。 */
     int  rx_len;            /* 已缓存字节数 */
     int  rx_head;           /* 已取走的位置 */
     int  closed;            /* 对端关了这条通道 */
@@ -73,11 +79,13 @@ typedef struct {
      *   所以：超时就把进度【留着】，下次调用接着读，一个字节都不丢。 */
     unsigned char  hdr[24];     /* 包头累积 */
     int            hdr_have;
-    unsigned char *pay;         /* 包体累积（按需增长一次，之后复用） */
-    int            pay_cap;
     int            pay_have;
     int            pay_need;    /* >0 表示「包体还没收完，别去读包头」 */
     unsigned int   pend_cmd, pend_a0, pend_a1;   /* 上面那个包的头信息 */
+
+    /* ⚠ 再强调一次：这个结构里【没有任何需要 free 的东西】。
+     *   所以调用方可以随便 memset、可以放在栈上、可以用未初始化的变量 ——
+     *   都不会出事。所有缓冲区都在 adb.c 内部，见 g_rx / g_pay。 */
 
     /* 这条 ADB 连接是否已经握手过。
      * ⚠ 为什么必须有它：车机上那个设备句柄【关不掉】（读线程阻塞在 ReadFile 里，
