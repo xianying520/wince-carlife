@@ -1022,10 +1022,18 @@ static DWORD WINAPI session_thread(LPVOID param)
          * 两种原因的处理办法完全不同，凭屏幕上的「打不开」是分不出来的。 */
         {
             unsigned long ib, ob, re, we, nd, le;
+            int  ru = 0, rc = 0;
+            unsigned long rd = 0;
+
             adbio_ce_stats(&ib, &ob, &re, &we, &nd, &le);
+            adbio_ce_ring(&ru, &rc, &rd);
             cl_log("   上一轮设备统计: 收到 %lu 字节 / 发出 %lu 字节 / "
                    "读失败 %lu 次 / 写失败 %lu 次 / 空读 %lu 次 / 末次错误 %lu",
                    ib, ob, re, we, nd, le);
+            /* 「读线程还活着吗」+ 环形缓冲水位：
+             * 这两个数一出来，就能立刻分清「设备不行了」和「我们自己的读线程没了」 */
+            cl_log("   读线程 %s，环形缓冲还剩 %d 字节（容量 %d），缓冲满丢过 %lu 次",
+                   adbio_ce_reader_alive() ? "活着" : "已退出", ru, rc, rd);
             adbio_ce_stats_reset();
         }
         adbio_ce_dump_usb_state(cl_log_line);
