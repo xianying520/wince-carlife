@@ -131,6 +131,20 @@ int main(void)
     /* ── 3) 数据能正常收上来 ── */
     send(g_peer, "hello-car", 9, MSG_NOSIGNAL);
     g_peer_sent += 9;
+    Sleep(400);                      /* 给读线程时间把它收进环形缓冲 */
+
+    /* ⚠ 这一行是「中间状态探针」：把「数据到底进没进环形缓冲」直接打出来。
+     *   没有它，只能看到「读返回 0」，分不清是
+     *   「读线程没收进来」还是「收进来了但取不出来」。 */
+    {
+        unsigned long rb2 = 0, rr2 = 0, rm2 = 0, rd2 = 0;
+        int ru2 = 0, rc2 = 0;
+        adbio_ce_reader_stats(&rb2, &rr2, &rm2);
+        adbio_ce_ring(&ru2, &rc2, &rd2);
+        printf("    注入 9 字节后：环形缓冲里有 %d 字节；"
+               "读线程累计读过 %lu 字节 / %lu 次\n", ru2, rb2, rr2);
+    }
+
     t0 = GetTickCount();
     n = io.read(io.ctx, buf, 64, 2000);
     {
