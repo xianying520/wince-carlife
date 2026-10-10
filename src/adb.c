@@ -434,7 +434,16 @@ int adb_open(ADB *a, const char *service)
 
     for (;;) {
         r = recv_msg(a, &cmd, &a0, &a1, buf, (int)sizeof(buf), &len, 8000);
-        if (r <= 0) return r == -2 ? -2 : -1;
+        if (r <= 0) {
+            /* ⚠ 失败也必须把槽位还回去。
+             *   通道表一共只有 ADB_MAX_CHAN(=8) 个槽位，而这里是先占位再发 OPEN 的。
+             *   原来这两条 return 直接就走了，占的槽位永远不释放 ——
+             *   失败八次之后，后面每一次 adb_open 都会返回「没有空槽」，
+             *   表象是「手机明明连上了，却再也发不出去任何命令」。
+             *   现场日志里那种「第一条成功、后面全秒失败」的形态，最容易落到这里。 */
+            memset(&a->ch[idx], 0, sizeof(a->ch[idx]));
+            return r == -2 ? -2 : -1;
+        }
 
         if (cmd == ADB_OKAY && a1 == (unsigned int)local_id) {
             /* 通道在发 OPEN 时就占好了，这里只补上对端的通道号 ——
@@ -447,8 +456,10 @@ int adb_open(ADB *a, const char *service)
             return -3;                          /* 手机拒绝了这条转发 */
         }
         if (cmd == ADB_WRTE || cmd == ADB_CLSE || cmd == ADB_OKAY) {
-            if (handle_msg(a, cmd, a0, a1, buf, len) < 0)
+            if (handle_msg(a, cmd, a0, a1, buf, len) < 0) {
+                memset(&a->ch[idx], 0, sizeof(a->ch[idx]));
                 return -1;
+            }
             continue;
         }
         /* 其它包忽略 */
