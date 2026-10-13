@@ -630,6 +630,14 @@ static LRESULT CALLBACK WndProc(HWND h, UINT m, WPARAM w, LPARAM l)
         /* 底部栏按钮：命中测试交给 ui.c。
          * 绝不能在这里另写一套坐标 —— 一旦和绘制用的矩形不一致，
          * 就会出现「看得见点不着」，而且极难查。 */
+        /* 右上角的「关闭」先判 —— 它和底栏不重叠，但顺序固定在前面，
+         * 免得以后有人改布局时把两者叠在一起。 */
+        if (ui_hit_close(x, y, &rc)) {
+            g_quit = 1;
+            DestroyWindow(h);
+            return 0;
+        }
+
         {
             int b = ui_hit_button(x, y, &rc);
             if (b == UI_BTN_EXIT) {
