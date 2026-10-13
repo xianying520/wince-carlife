@@ -303,6 +303,27 @@ static void text(HDC dc, HFONT f, const WCHAR *s, RECT *r,
     SelectObject(dc, of);
 }
 
+/* ── 右上角「关闭」按钮的矩形 ──
+ * 绘制和命中测试【共用这一个函数】——
+ * 两处各写一套坐标必然走样，变成「看得见点不着」，而且极难查。 */
+static void close_rect(const RECT *rc, RECT *out)
+{
+    int cr;
+    int bw = px(48), bh = px(20);
+    content_left(rc, &cr);
+    out->right  = cr;
+    out->left   = cr - bw;
+    out->top    = rc->top + px(4) + (px(UI_F_BRAND + 3) - bh) / 2;
+    out->bottom = out->top + bh;
+}
+
+int ui_hit_close(int x, int y, const RECT *rc)
+{
+    RECT b;
+    close_rect(rc, &b);
+    return (x >= b.left && x < b.right && y >= b.top && y < b.bottom);
+}
+
 /* ── 底栏三个按钮的矩形（从右往左排）── */
 static void button_rect(int which, const RECT *rc, RECT *out)
 {
@@ -386,14 +407,23 @@ void ui_paint_connect(HDC dc, const RECT *rc)
         text(dc, g_f_tag, L"支持WinCE车机的智驾车载互联工具", &r, UI_MUTED,
              DT_LEFT | DT_TOP | DT_SINGLELINE);
 
-        /* 日志提示挂在第一行右侧，和品牌同一基线 */
+        /* 日志提示挂在第一行右侧，和品牌同一基线（右边给「关闭」按钮让位） */
         {
             const WCHAR *lg = L"运行日志：carlife-log.txt";
-            r.left = cr - px(170); r.right = cr;
+            r.left = cr - px(220); r.right = cr - px(54);
             r.top    = y0 + px(4);
             r.bottom = y0 + px(4) + px(UI_F_BRAND + 3);
             text(dc, g_f_bar, lg, &r, UI_HINT,
                  DT_RIGHT | DT_VCENTER | DT_SINGLELINE);
+        }
+
+        /* 右上角：关闭按钮。带上底色，一眼就看得出是个能点的东西。 */
+        {
+            RECT cb;
+            close_rect(rc, &cb);
+            FillRect(dc, &cb, g_br_panel);
+            text(dc, g_f_bar, L"关闭", &cb, UI_TEXT,
+                 DT_CENTER | DT_VCENTER | DT_SINGLELINE);
         }
         hr(dc, cl, rc->top + px(UI_TOP_H), cr, UI_RULE);
     }
