@@ -33,6 +33,14 @@ void ui_stages_reset(void);
 void ui_headline(const WCHAR *line1, const WCHAR *line2);
 void ui_footline(const WCHAR *text);
 
+/* 右上角「关闭」按钮的命中测试。
+ * ⚠ 为什么非要自己画一个：窗口是 WS_POPUP 全屏（没有标题栏），系统不会给
+ *   关闭按钮；而 WM_CLOSE 又【刻意忽略】（防车机外壳误关窗口）。
+ *   结果就是「程序关不掉」—— 现场真被卡住过。
+ *   底栏那个「退出」在屏幕被任务栏遮挡、或分辨率不对时会看不见，
+ *   所以右上角再放一个明确写着「关闭」的。 */
+int  ui_hit_close(int x, int y, const RECT *rc);
+
 /* 底栏右侧按钮的文字（触摸写法 / 分辨率 / 退出）*/
 void ui_button_label(int which, const WCHAR *text);
 
